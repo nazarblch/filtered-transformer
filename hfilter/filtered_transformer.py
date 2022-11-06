@@ -24,7 +24,11 @@ class ChunkFilter(FilterModel):
         self.chunk_size = chunk_size
         self.pos_encoder = PositionalEncoding2(hidden_dim)
         self.embed = nn.Linear(dim, hidden_dim)
-        self.head = nn.Linear(hidden_dim, sample_size)
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, sample_size)
+        )
 
     def add_pos(self, x: Tensor):
         out = self.embed(x)
@@ -40,20 +44,53 @@ class ChunkFilter(FilterModel):
         B = (B1 * self.chunk_size) // L
         return x.view(B, L, *x.shape[2:])
 
-    def forward(self, state: Tensor, data: Tensor):
-        B, T, D = data.shape
+    def preprocess_data(self, data: Tensor):
+        B = data.shape[0]
         data = self.add_pos(data)
-        x = self.chunk(data)
+
+        with torch.no_grad():
+            ttx = []
+            for b in range(B // 8):
+                xb = self.chunk(data[8 * b:8 * b + 8])
+                ttx.append(self.transformer(xb)[:, -1])
+            ttx = torch.cat(ttx)
+
+        return data, ttx
+
+    def filter_data(self, data: Tensor, hidden: Tensor, state: Tensor):
+        B, T = data.shape[0], data.shape[1]
+
         state = state[torch.arange(0, B, device=state.device).repeat_interleave(T // self.chunk_size)]
-        F = self.head(self.transformer(state, x)[:, -1])
+
+        F = self.head(torch.cat([state[:, -1], hidden], dim=-1))
         F = F.view(B, T // self.chunk_size, F.shape[1]).transpose(1, 2)
-        F = StochasticMultinomialTensor(F).sample().max(1)[0].repeat_interleave(self.chunk_size, dim=1)
+        dist = StochasticMultinomialTensor(F)
+        sample = dist.sample().max(1)[0]
+        FD = sample.repeat_interleave(self.chunk_size, dim=1)
 
-        lens = (F > 0.5).type(torch.int64).sum(-1).detach().cpu().numpy().tolist()
-        x3 = data[F > 0.5] * F[F > 0.5][:,  None]
-        sp = torch.split(x3, lens, 0)
+        Fx = self.chunk(data)[(sample > 0.5).view(-1)]
+        FS = state[(sample > 0.5).view(-1)]
 
-        return pad_sequence(sp, batch_first=True)
+        F1 = self.head(torch.cat([FS[:, -1], self.transformer(Fx)[:, -1]], dim=-1))
+        F1 = dist.add_probs(F1).max(1)[0].repeat_interleave(self.chunk_size, dim=0)
+
+        lens = (FD > 0.5).type(torch.int64).sum(-1).detach().cpu().numpy().tolist()
+        x3 = data[FD > 0.5] * F1[:, None]
+
+        return x3, lens
+
+    def forward(self, data: Tensor):
+        B, T, D = data.shape
+        data, hidden = self.preprocess_data(data)
+
+        def proc_state(state: Tensor):
+
+            filtered_data, lens = self.filter_data(data, hidden, state)
+
+            sp = torch.split(filtered_data, lens, 0)
+            return pad_sequence(sp, batch_first=True)
+
+        return proc_state
 
 
 class RandomChunkFilter(FilterModel):
@@ -281,8 +318,9 @@ class FilteredTransformer(nn.Module):
 
     def forward(self, s: Tensor, data: Tensor):
         # s = self.embed(s0)
+        proc_state = self.filter_model(data)
         for _ in range(self.steps):
-            fd = self.filter_model(s, data)
+            fd = proc_state(s)
             s = self.transformer(fd, s)
 
         return s

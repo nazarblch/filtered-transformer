@@ -18,7 +18,7 @@ class T22(nn.Transformer):
         return self.encoder(xy)[:, x.shape[1]:]
 
 tr_dim = 256
-filter_model = ChunkFilter(T22(tr_dim, 4, 3, 3, 512, batch_first=True), 14, 1, tr_dim, 4).cuda()
+filter_model = ChunkFilter(nn.Transformer(tr_dim, 4, 3, 3, 512, batch_first=True).encoder, 14, 1, tr_dim, 4).cuda()
 # filter_model = RandomChunkFilter(7, 1, tr_dim, 10).cuda()
 # filter_model = HierarchicalChunkFilter(
 #         HierarchicalTransformer(
@@ -37,7 +37,7 @@ predictor = nn.Linear(tr_dim, 10).cuda()
 gen = PermMNISTTaskGenerator(is_train=True, padding=False, do_perm=True)
 test_gen = PermMNISTTaskGenerator(is_train=False, padding=False, do_perm=True)
 
-writer = SummaryWriter(f"/home/jovyan/pomoika/pmnist_{time.time()}")
+writer = SummaryWriter(f"/home/nazar/pomoika/pmnist_{time.time()}")
 
 opt = torch.optim.Adam(
     [{'params': f_tr.parameters(), 'lr': 1e-5},
@@ -61,6 +61,7 @@ for i in range(30000):
     B = 128
     X, Y = make_batch(gen, B)
     s = torch.zeros(B, 30, tr_dim).cuda()
+    t0 = time.time()
 
     for k in range(15):
         opt.zero_grad()
@@ -68,10 +69,12 @@ for i in range(30000):
         pred = predictor_tr(s)
         pred = predictor(pred[:, -1])
         loss = nn.CrossEntropyLoss()(pred, Y)
-        print(k, loss.item())
         loss.backward()
         opt.step()
         s = s.detach()
+
+    print("iter time", time.time() - t0)
+    print("train loss", loss.item())
     writer.add_scalar("train loss", loss.item(), i)
 
     if i % 20 == 0:

@@ -164,7 +164,7 @@ class Trainer(nn.Module):
 
         # discount_arr = torch.cat([torch.ones_like(gamma[:1]), gamma[1:]])
         # discount = torch.cumprod(discount_arr[:-1], 0)
-        actor_loss = -torch.sum(torch.mean(reward + values * 0.01, dim=1))
+        actor_loss = -torch.sum(torch.mean(reward + values * 0.1, dim=1))
         return actor_loss, reward, contexts, change_context
 
     def value_loss(self, states, contexts, reward):
@@ -226,7 +226,10 @@ if __name__ == "__main__":
         context_set.append(np.random.uniform(0, 100, 5).astype(np.float32))
 
     trainer = Trainer(Reward(0.02), Value(), Pred(), Change()).cuda()
-    opt = torch.optim.Adam(chain(trainer.predictor.parameters(), trainer.change_model.parameters()), lr=1e-4)
+    opt = torch.optim.Adam([
+        {'params': trainer.predictor.parameters(), 'lr': 1e-4},
+        {'params': trainer.change_model.parameters(), 'lr': 1e-5},
+     ])
     val_opt = torch.optim.Adam(trainer.value_model.parameters(), lr=1e-4)
 
     sequences = []
