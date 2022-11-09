@@ -2,15 +2,7 @@ from abc import abstractmethod, ABC
 import torch
 from sklearn.metrics import accuracy_score
 from torch import Tensor
-
-
-class Metric(ABC):
-    def __init__(self, name):
-        self.name = name
-
-    @abstractmethod
-    def __call__(self, *args, **kwargs) -> float:
-        pass
+from metrics.base import Metric
 
 
 class AccuracyMetric(Metric):

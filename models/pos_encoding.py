@@ -1,7 +1,6 @@
 import math
 from torch import nn, Tensor
 import torch
-from torch.nn import TransformerEncoderLayer, TransformerEncoder
 
 
 def create_position_ids_from_inputs_embeds(inputs_embeds: Tensor, padding_idx=1):
@@ -46,25 +45,14 @@ class PositionalEncoding2(nn.Module):
         return x
 
 
-class FloatTransformer(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
+class LinearEmbedWithPos(nn.Module):
+
+    def __init__(self, dim: int, d_model: int, multiplier: float, max_len: int = 5000):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.pre_proc = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim)
-        )
+        self.embed = nn.Linear(dim, d_model)
+        self.pos_encoder = PositionalEncoding2(d_model, max_len=max_len)
+        self.multiplier = multiplier
 
-        d_model = hidden_dim
-        dropout = 0.0
-        nhead = 4
-        self.pos_encoder = PositionalEncoding2(hidden_dim)
-        encoder_layers = TransformerEncoderLayer(d_model, nhead, hidden_dim, dropout, batch_first=True)
-        self.transformer_encoder = TransformerEncoder(encoder_layers, 2)
-
-    def forward(self, x: Tensor) -> Tensor:
-        B, L, D = x.shape
-        out = self.pre_proc(x.reshape(B * L, D)).reshape(B, L, -1)
-        out = self.pos_encoder(out) * math.sqrt(L)
-        out = self.transformer_encoder(out)
-
-        return out
+    def forward(self, x: Tensor):
+        out = self.embed(x)
+        return self.pos_encoder(out) * math.sqrt(self.multiplier)
