@@ -15,7 +15,7 @@ from models.transformers import RecurrentTransformer, TransformerClassifier
 
 tr_dim = 128
 filter_model: FilterModel = SeqFilter(
-    size=50
+    size=20
 ).cuda()
 
 rec_transformer = FilteredRecurrentTransformer(
@@ -25,7 +25,7 @@ rec_transformer = FilteredRecurrentTransformer(
     rollout=2
 ).cuda()
 
-predictor = TransformerClassifier(1, tr_dim, 4, 2, 512).cuda()
+predictor = TransformerClassifier(1, tr_dim, 4, 1, 512).cuda()
 
 gen = AddTask(500)
 test_gen = AddTask(500)

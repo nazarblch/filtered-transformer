@@ -83,10 +83,17 @@ class TransformerClassifier(nn.Module):
             nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True),
             num_layers
         )
-        self.linear = nn.Linear(d_model, num_classes)
+        self.head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(inplace=True),
+            nn.Linear(d_model, d_model),
+            nn.Dropout(0.1),
+            nn.ReLU(inplace=True),
+            nn.Linear(d_model, num_classes)
+        )
 
     def forward(self, x):
-        return self.linear(self.encoder(x)[:, -1])
+        return self.head(self.encoder(x)[:, -1])
 
 
 class FloatTransformer(nn.Module):
