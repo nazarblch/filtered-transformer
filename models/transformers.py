@@ -2,6 +2,11 @@ import math
 import torch
 from torch import nn, Tensor
 from torch.nn import TransformerEncoderLayer, TransformerEncoder
+from transformers import BertModel
+from typing import Dict
+
+from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
+
 from models.pos_encoding import PositionalEncoding2
 
 
@@ -24,6 +29,33 @@ class RecurrentTransformer(nn.Module):
         xs = torch.cat([x, state], dim=1)
         return self.encoder(xs)[:, x.shape[1]:]
 
+
+class BertRecurrentTransformer(RecurrentTransformer):
+
+    def __init__(self,
+                 bert: BertModel,
+                 nhead: int = 4,
+                 num_layers: int = 1,
+                 dim_feedforward: int = 2048,
+                 dropout: float = 0.1):
+        super().__init__()
+
+        self.bert: BertModel = bert
+
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(bert.config.hidden_size, nhead, dim_feedforward, dropout, batch_first=True),
+            num_layers
+        )
+
+    def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
+        return h.last_hidden_state
+
+    def forward(self, x: Dict[str, Tensor], state: Tensor) -> Tensor:
+        h = self.extract_hidden(self.bert(**x))
+        assert state.shape[-1] == h.shape[-1]
+        assert state.shape[0] == h.shape[0]
+        hs = torch.cat([h, state], dim=1)
+        return self.encoder(hs)[:, h.shape[1]:]
 
 class HierarchicalTransformer(nn.Module):
     def __init__(self, *transformers: nn.Transformer, dim: int, chunk_size: int):
@@ -85,10 +117,10 @@ class TransformerClassifier(nn.Module):
         )
         self.head = nn.Sequential(
             nn.Linear(d_model, d_model),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Linear(d_model, d_model),
             nn.Dropout(0.1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Linear(d_model, num_classes)
         )
 

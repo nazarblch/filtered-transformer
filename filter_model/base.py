@@ -71,9 +71,9 @@ class FilteredRecurrentTransformer(RecurrentTransformer):
         while fd is not None:
 
             s = self.transformer(fd, s)
+            yield s
 
             if step % self.steps == 0 and step > 0:
-                yield s
                 s = s.detach()
 
             fd = proc_state(s)

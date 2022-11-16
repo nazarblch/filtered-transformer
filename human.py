@@ -7,24 +7,9 @@ from transformers import AutoTokenizer
 import pandas as pd
 from tqdm import tqdm
 
+from datasets.gena import HumanDataset
 
-class HumanDataset(Dataset):
-
-    def __init__(self, path, tokenizer):
-        df = pd.read_csv(path)
-        self.labels = [label for label in df['promoter_presence']]
-        self.texts = tokenizer([
-            text for text in df['sequence']
-        ], return_tensors="pt", padding='max_length', max_length=400)
-        self.ids = self.texts['input_ids']
-        self.att = self.texts['attention_mask']
-
-    def __len__(self):
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        return self.ids[idx], self.att[idx], self.labels[idx]
-
+torch.cuda.set_device("cuda:1")
 
 class BertClassifier(nn.Module):
 
@@ -40,6 +25,8 @@ class BertClassifier(nn.Module):
     def forward(self, input_id, mask):
 
         output = self.bert(input_ids=input_id, attention_mask=mask)
+        print(type(output))
+        print(output['last_hidden_state'].shape)
         dropout_output = self.dropout(output['pooler_output'])
         linear_output = self.linear(dropout_output)
         final_layer = self.relu(linear_output)
@@ -56,11 +43,11 @@ opt = torch.optim.Adam([
 ])
 
 data = HumanDataset(
-    "/home/nazar/PycharmProjects/GENA_LM/downstream_tasks/promoter_prediction/hg38__promoters_dataset.csv",
+    "/home/nazar/GENA_LM/downstream_tasks/promoter_prediction/hg38_len_2000_promoters_dataset.csv",
     tokenizer
 )
 
-loader = DataLoader(data, shuffle=True, batch_size=32)
+loader = DataLoader(data, shuffle=True, batch_size=24)
 
 for epoch_num in range(100):
 
