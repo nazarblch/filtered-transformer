@@ -13,7 +13,7 @@ from datasets.add import AddTask
 from datasets.gena import HumanDataset
 from filter_model.base import FilteredRecurrentTransformer, NStepFilterObject, FilterModel
 from filter_model.chunk_filter import ChunkFilter
-from filter_model.seq_filter import SeqFilter, DictSeqFilter
+from filter_model.seq_filter import SeqFilter, DictSeqFilter, DictSeqFilterBidirectional
 from metrics.accuracy import AccuracyMetric
 from datasets.pmnist import PermMNISTTaskGenerator
 from models.pos_encoding import LinearEmbedWithPos
@@ -46,26 +46,28 @@ def make_batch(loader: Iterator[DataLoader]):
     X, m, y = X.cuda(), m.cuda(), y.cuda()
     return {'input_ids': X, 'attention_mask': m}, y
 
-filter_model: FilterModel = DictSeqFilter(
-    size=40,
+filter_model: FilterModel = DictSeqFilterBidirectional(
+    size=100,
     key='input_ids'
 ).cuda()
 
+h_dim = bert_model.config.hidden_size
+
 rec_transformer = FilteredRecurrentTransformer(
-    BertRecurrentTransformer(bert_model, num_layers=2, dim_feedforward=512),
+    BertRecurrentTransformer(bert_model, num_layers=5, dim_feedforward=h_dim * 2),
     filter_model,
     embedding=None,
     rollout=2
 ).cuda()
 
-predictor = TransformerClassifier(2, bert_model.config.hidden_size, 4, 1, 512).cuda()
+predictor = TransformerClassifier(2, h_dim, 8, 1, h_dim * 2).cuda()
 
 writer = SummaryWriter(f"/home/nazar/pomoika/gena_2000_{time.time()}")
 
 opt = torch.optim.Adam(
-    [{'params': rec_transformer.transformer.encoder.parameters(), 'lr': 2e-5},
-     {'params': rec_transformer.transformer.bert.parameters(), 'lr': 2e-6},
-     {'params': predictor.parameters(), 'lr': 2e-5}
+    [{'params': rec_transformer.transformer.encoder.parameters(), 'lr': 1e-4},
+     {'params': rec_transformer.transformer.bert.parameters(), 'lr': 1e-5},
+     {'params': predictor.parameters(), 'lr': 1e-4}
      ]
 )
 
@@ -81,26 +83,18 @@ for i in range(30000):
 
     states_generator = rec_transformer.forward(X, s0)
 
-    for _ in range(5):
+    for s in states_generator:
         opt.zero_grad()
-        s = next(states_generator)
-        if s is None:
-            break
         pred = predictor(s)
-        loss1 = nn.CrossEntropyLoss()(pred, Y)
-
-        s = next(states_generator)
-        pred = predictor(s)
-        loss2 = nn.CrossEntropyLoss()(pred, Y)
-
-        (loss1 + loss2).backward()
+        loss = nn.CrossEntropyLoss()(pred, Y)
+        loss.backward()
         opt.step()
 
     scheduler.step()
 
     print("iter time", time.time() - t0)
-    print("train loss", loss2.item())
-    writer.add_scalar("train loss", loss2.item(), i)
+    print("train loss", loss.item())
+    writer.add_scalar("train loss", loss.item(), i)
 
     if i % 20 == 0:
         rec_transformer.eval()

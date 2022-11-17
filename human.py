@@ -8,6 +8,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from datasets.gena import HumanDataset
+from models.transformers import TransformerClassifier
 
 torch.cuda.set_device("cuda:1")
 
@@ -19,16 +20,17 @@ class BertClassifier(nn.Module):
 
         self.bert = bert
         self.dropout = nn.Dropout(dropout)
-        self.linear = nn.Linear(768, 2)
+        self.head = TransformerClassifier(2, bert.config.hidden_size, 8, 1, bert.config.hidden_size)
+        # self.head = nn.Linear(bert.config.hidden_size, 2)
         self.relu = nn.ReLU()
 
     def forward(self, input_id, mask):
 
-        output = self.bert(input_ids=input_id, attention_mask=mask)
-        print(type(output))
-        print(output['last_hidden_state'].shape)
-        dropout_output = self.dropout(output['pooler_output'])
-        linear_output = self.linear(dropout_output)
+        output = self.bert(input_ids=input_id, attention_mask=mask, output_hidden_states=True)
+        # print(type(output))
+        # dropout_output = self.dropout(output['hidden_states'][3])
+        dropout_output = torch.cat([output['last_hidden_state'], output['pooler_output'][:, None]], dim=1)
+        linear_output = self.head(dropout_output)
         final_layer = self.relu(linear_output)
 
         return final_layer
@@ -39,7 +41,7 @@ model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute
 cls = BertClassifier(model).cuda()
 opt = torch.optim.Adam([
     {"params": cls.bert.parameters(), "lr": 1e-5},
-    {"params": cls.linear.parameters(), "lr": 1e-4},
+    {"params": cls.head.parameters(), "lr": 1e-4},
 ])
 
 data = HumanDataset(
@@ -53,6 +55,8 @@ for epoch_num in range(100):
 
     total_acc_train = 0
     total_loss_train = 0
+
+    i = 0
 
     for X, m, y in tqdm(loader):
 
@@ -69,6 +73,11 @@ for epoch_num in range(100):
         cls.zero_grad()
         batch_loss.backward()
         opt.step()
+
+        i += 1
+
+        if i % 100 == 0:
+            print(total_acc_train / (i * X.shape[0]))
 
     print(f'Epochs: {epoch_num + 1} | Train Loss: {total_loss_train / len(data): .3f} \
                     | Train Accuracy: {total_acc_train / len(data): .3f}')

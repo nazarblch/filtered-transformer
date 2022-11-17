@@ -34,8 +34,8 @@ class BertRecurrentTransformer(RecurrentTransformer):
 
     def __init__(self,
                  bert: BertModel,
-                 nhead: int = 4,
-                 num_layers: int = 1,
+                 nhead: int = 8,
+                 num_layers: int = 4,
                  dim_feedforward: int = 2048,
                  dropout: float = 0.1):
         super().__init__()
@@ -48,10 +48,10 @@ class BertRecurrentTransformer(RecurrentTransformer):
         )
 
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
-        return h.last_hidden_state
+        return h["hidden_states"][3]
 
     def forward(self, x: Dict[str, Tensor], state: Tensor) -> Tensor:
-        h = self.extract_hidden(self.bert(**x))
+        h = self.extract_hidden(self.bert(**x, output_hidden_states=True))
         assert state.shape[-1] == h.shape[-1]
         assert state.shape[0] == h.shape[0]
         hs = torch.cat([h, state], dim=1)
