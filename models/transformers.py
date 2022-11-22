@@ -56,7 +56,7 @@ class BertRecurrentTransformer(RecurrentTransformer):
         return h['last_hidden_state']
 
     def forward(self, x: Dict[str, Tensor], state: Tensor) -> Tensor:
-        h = self.extract_hidden(self.bert(input_ids=x["input_ids"], output_hidden_states=True))
+        h = self.extract_hidden(self.bert.encoder(x["input_ids"], output_hidden_states=True))
         assert state.shape[-1] == h.shape[-1]
         assert state.shape[0] == h.shape[0]
         hs = torch.cat([h, state], dim=1)

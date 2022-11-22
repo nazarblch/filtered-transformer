@@ -23,7 +23,7 @@ tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
 
 rec_transformer = FilteredRecurrentTransformer(
-    BertRecurrentTransformer(bert_model, 4, 3, bert_model.config.hidden_size),
+    BertRecurrentTransformer(bert_model, 4, 2, bert_model.config.hidden_size),
     DictSeqFilterBidirectional(
         size=50,
         key='input_ids'
@@ -55,9 +55,13 @@ step = 0
 
 for epoch_num in range(100):
 
+    rec_transformer.train()
+    head.train()
+
     for X, m, y in tqdm(train_loader):
 
         X, m, y = X.cuda(), m.cuda(), y.cuda()
+        X = rec_transformer.transformer.bert.embeddings(X).detach()
         B = X.shape[0]
 
         s0 = torch.zeros(X.shape[0], 30, bert_model.config.hidden_size, device=X.device)
@@ -81,10 +85,14 @@ for epoch_num in range(100):
 
     with torch.no_grad():
 
+        rec_transformer.eval()
+        head.eval()
+
         test_acc = 0
 
         for X, m, y in test_loader:
             X, m, y = X.cuda(), m.cuda(), y.cuda()
+            X = rec_transformer.transformer.bert.embeddings(X)
             B = X.shape[0]
             s0 = torch.zeros(X.shape[0], 30, bert_model.config.hidden_size, device=X.device)
             *_, s = rec_transformer.forward({"input_ids": X, "attention_mask": m}, s0)
