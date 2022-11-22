@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 
+import torch
 from torch import nn, Tensor
 
 from models.transformers import RecurrentTransformer
@@ -67,15 +68,21 @@ class FilteredRecurrentTransformer(RecurrentTransformer):
 
         step = 1
         fd = proc_state(s)
+        s_seq = []
 
         while fd is not None:
 
             s = self.transformer(fd, s)
+            s_seq.append(s)
 
             if step % self.steps == 0 and step > 0:
-                yield s
+                yield torch.cat(s_seq)
                 s = s.detach()
+                s_seq = []
 
             fd = proc_state(s)
+
+            if fd is None and step % self.steps != 0 and step > 0:
+                yield torch.cat(s_seq)
 
             step += 1

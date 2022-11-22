@@ -1,83 +1,95 @@
+import time
+from copy import deepcopy
+
 import numpy as np
 import torch
-from gena_lm.modeling_bert import BertForSequenceClassification, BertModel
+from gena_lm.modeling_bert import BertForSequenceClassification, BertModel, BertEncoder
 from torch import nn
+from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer
+from torch.utils.tensorboard import SummaryWriter
+from transformers import AutoTokenizer, BertConfig
 import pandas as pd
 from tqdm import tqdm
 
 from datasets.gena import HumanDataset
-from models.transformers import TransformerClassifier
+from filter_model.base import FilterModel, FilteredRecurrentTransformer
+from filter_model.seq_filter import DictSeqFilterBidirectional
+from models.transformers import TransformerClassifier, BertClassifier, BertRecurrentTransformer
 
-torch.cuda.set_device("cuda:1")
-
-class BertClassifier(nn.Module):
-
-    def __init__(self, bert, dropout=0.1):
-
-        super(BertClassifier, self).__init__()
-
-        self.bert = bert
-        self.dropout = nn.Dropout(dropout)
-        self.head = TransformerClassifier(2, bert.config.hidden_size, 8, 1, bert.config.hidden_size)
-        # self.head = nn.Linear(bert.config.hidden_size, 2)
-        self.relu = nn.ReLU()
-
-    def forward(self, input_id, mask):
-
-        output = self.bert(input_ids=input_id, attention_mask=mask, output_hidden_states=True)
-        # print(type(output))
-        # dropout_output = self.dropout(output['hidden_states'][3])
-        dropout_output = torch.cat([output['last_hidden_state'], output['pooler_output'][:, None]], dim=1)
-        linear_output = self.head(dropout_output)
-        final_layer = self.relu(linear_output)
-
-        return final_layer
-
+torch.cuda.set_device("cuda:0")
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
-model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
-cls = BertClassifier(model).cuda()
+bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
+
+rec_transformer = FilteredRecurrentTransformer(
+    BertRecurrentTransformer(bert_model, 4, 3, bert_model.config.hidden_size),
+    DictSeqFilterBidirectional(
+        size=50,
+        key='input_ids'
+    ),
+    embedding=None,
+    rollout=2
+).cuda()
+head = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
+
 opt = torch.optim.Adam([
-    {"params": cls.bert.parameters(), "lr": 1e-5},
-    {"params": cls.head.parameters(), "lr": 1e-4},
+    {"params": rec_transformer.transformer.bert.parameters(), "lr": 4e-6},
+    {"params": head.parameters(), "lr": 4e-5},
+    {"params": rec_transformer.transformer.encoder.parameters(), "lr": 4e-5},
 ])
+scheduler = StepLR(opt, step_size=200, gamma=0.95)
 
 data = HumanDataset(
-    "/home/nazar/GENA_LM/downstream_tasks/promoter_prediction/hg38_len_2000_promoters_dataset.csv",
+    "/home/nazar/PycharmProjects/GENA_LM/downstream_tasks/promoter_prediction/hg38_len_2000_promoters_dataset.csv",
     tokenizer
 )
 
-loader = DataLoader(data, shuffle=True, batch_size=24)
+train_data, test_data = torch.utils.data.random_split(data, [int(len(data) * 0.8), len(data) - int(len(data) * 0.8)])
+
+train_loader = DataLoader(train_data, shuffle=True, batch_size=64)
+test_loader = DataLoader(test_data, shuffle=False, batch_size=256)
+
+writer = SummaryWriter(f"/home/nazar/pomoika/gena_2000_seq_tr_{time.time()}")
+step = 0
 
 for epoch_num in range(100):
 
-    total_acc_train = 0
-    total_loss_train = 0
-
-    i = 0
-
-    for X, m, y in tqdm(loader):
+    for X, m, y in tqdm(train_loader):
 
         X, m, y = X.cuda(), m.cuda(), y.cuda()
+        B = X.shape[0]
 
-        pred = cls(X, m)
+        s0 = torch.zeros(X.shape[0], 30, bert_model.config.hidden_size, device=X.device)
+        gen = rec_transformer.forward({"input_ids": X, "attention_mask": m}, s0)
 
-        batch_loss = nn.CrossEntropyLoss()(pred, y)
-        total_loss_train += batch_loss.item()
+        for s in gen:
+            pred_1 = head(s)
 
-        acc = (pred.argmax(dim=1) == y).sum().item()
-        total_acc_train += acc
+            batch_loss = nn.CrossEntropyLoss()(pred_1, y.repeat(pred_1.shape[0] // B))
+            opt.zero_grad()
+            batch_loss.backward()
+            opt.step()
 
-        cls.zero_grad()
-        batch_loss.backward()
-        opt.step()
+        scheduler.step()
 
-        i += 1
+        acc = (pred_1[pred_1.shape[0] - B:].argmax(dim=1) == y).sum().item() / X.shape[0]
+        writer.add_scalar("train acc", acc, step)
+        writer.add_scalar("train loss", batch_loss.item(), step)
 
-        if i % 100 == 0:
-            print(total_acc_train / (i * X.shape[0]))
+        step += 1
 
-    print(f'Epochs: {epoch_num + 1} | Train Loss: {total_loss_train / len(data): .3f} \
-                    | Train Accuracy: {total_acc_train / len(data): .3f}')
+    with torch.no_grad():
+
+        test_acc = 0
+
+        for X, m, y in test_loader:
+            X, m, y = X.cuda(), m.cuda(), y.cuda()
+            B = X.shape[0]
+            s0 = torch.zeros(X.shape[0], 30, bert_model.config.hidden_size, device=X.device)
+            *_, s = rec_transformer.forward({"input_ids": X, "attention_mask": m}, s0)
+            pred_1 = head(s)
+            acc = (pred_1[pred_1.shape[0] - B:].argmax(dim=1) == y).sum().item()
+            test_acc += acc
+
+        writer.add_scalar("test acc", test_acc / len(test_data), epoch_num)

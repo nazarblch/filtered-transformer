@@ -17,9 +17,9 @@ from filter_model.seq_filter import SeqFilter, DictSeqFilter, DictSeqFilterBidir
 from metrics.accuracy import AccuracyMetric
 from datasets.pmnist import PermMNISTTaskGenerator
 from models.pos_encoding import LinearEmbedWithPos
-from models.transformers import RecurrentTransformer, TransformerClassifier, BertRecurrentTransformer
+from models.transformers import RecurrentTransformer, TransformerClassifier, BertRecurrentTransformer, BertClassifier
 
-torch.cuda.set_device("cuda:1")
+torch.cuda.set_device("cuda:0")
 
 def inf_loader(loader: DataLoader):
     while True:
@@ -31,7 +31,7 @@ tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
 
 data = HumanDataset(
-    "/home/nazar/GENA_LM/downstream_tasks/promoter_prediction/hg38_len_2000_promoters_dataset.csv",
+    "/home/nazar/PycharmProjects/GENA_LM/downstream_tasks/promoter_prediction/hg38_len_2000_promoters_dataset.csv",
     tokenizer
 )
 
@@ -54,20 +54,20 @@ filter_model: FilterModel = DictSeqFilterBidirectional(
 h_dim = bert_model.config.hidden_size
 
 rec_transformer = FilteredRecurrentTransformer(
-    BertRecurrentTransformer(bert_model, num_layers=5, dim_feedforward=h_dim * 2),
+    BertRecurrentTransformer(bert_model, num_layers=1, nhead=2, dim_feedforward=h_dim),
     filter_model,
     embedding=None,
     rollout=2
 ).cuda()
 
-predictor = TransformerClassifier(2, h_dim, 8, 1, h_dim * 2).cuda()
+predictor = BertClassifier(2, bert_model.config, 2, 1, h_dim).cuda()
 
 writer = SummaryWriter(f"/home/nazar/pomoika/gena_2000_{time.time()}")
 
 opt = torch.optim.Adam(
-    [{'params': rec_transformer.transformer.encoder.parameters(), 'lr': 1e-4},
-     {'params': rec_transformer.transformer.bert.parameters(), 'lr': 1e-5},
-     {'params': predictor.parameters(), 'lr': 1e-4}
+    [{'params': rec_transformer.transformer.encoder.parameters(), 'lr': 2e-5},
+     {'params': rec_transformer.transformer.bert.parameters(), 'lr': 2e-6},
+     {'params': predictor.parameters(), 'lr': 2e-5}
      ]
 )
 

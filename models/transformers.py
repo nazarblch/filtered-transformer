@@ -1,8 +1,11 @@
 import math
+from copy import deepcopy
+
 import torch
+from gena_lm.modeling_bert import BertEncoder
 from torch import nn, Tensor
 from torch.nn import TransformerEncoderLayer, TransformerEncoder
-from transformers import BertModel
+from transformers import BertModel, BertConfig
 from typing import Dict
 
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
@@ -34,28 +37,30 @@ class BertRecurrentTransformer(RecurrentTransformer):
 
     def __init__(self,
                  bert: BertModel,
-                 nhead: int = 8,
-                 num_layers: int = 4,
-                 dim_feedforward: int = 2048,
-                 dropout: float = 0.1):
+                 nhead: int = 4,
+                 num_layers: int = 2,
+                 dim_feedforward: int = 2048):
         super().__init__()
 
         self.bert: BertModel = bert
 
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(bert.config.hidden_size, nhead, dim_feedforward, dropout, batch_first=True),
-            num_layers
-        )
+        config = deepcopy(bert.config)
+
+        config.num_attention_heads = nhead
+        config.num_hidden_layers = num_layers
+        config.intermediate_size = dim_feedforward
+
+        self.encoder = BertEncoder(config)
 
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
-        return h["hidden_states"][3]
+        return h['last_hidden_state']
 
     def forward(self, x: Dict[str, Tensor], state: Tensor) -> Tensor:
-        h = self.extract_hidden(self.bert(**x, output_hidden_states=True))
+        h = self.extract_hidden(self.bert(input_ids=x["input_ids"], output_hidden_states=True))
         assert state.shape[-1] == h.shape[-1]
         assert state.shape[0] == h.shape[0]
         hs = torch.cat([h, state], dim=1)
-        return self.encoder(hs)[:, h.shape[1]:]
+        return self.encoder(hs)['last_hidden_state'][:, h.shape[1]:]
 
 class HierarchicalTransformer(nn.Module):
     def __init__(self, *transformers: nn.Transformer, dim: int, chunk_size: int):
@@ -127,6 +132,36 @@ class TransformerClassifier(nn.Module):
     def forward(self, x):
         return self.head(self.encoder(x)[:, -1])
 
+
+class BertClassifier(nn.Module):
+    def __init__(self,
+                 num_classes: int,
+                 config: BertConfig,
+                 nhead: int = 8,
+                 num_layers: int = 6,
+                 dim_feedforward: int = 2048):
+        super().__init__()
+
+        config = deepcopy(config)
+
+        config.num_attention_heads = nhead
+        config.num_hidden_layers = num_layers
+        config.intermediate_size = dim_feedforward
+
+        self.encoder = BertEncoder(config)
+        d_model = config.hidden_size
+
+        self.head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(d_model, num_classes)
+        )
+
+    def forward(self, x):
+        return self.head(self.encoder(x)['last_hidden_state'][:, -1])
 
 class FloatTransformer(nn.Module):
     def __init__(self, input_dim, hidden_dim):
