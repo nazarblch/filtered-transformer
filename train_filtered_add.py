@@ -29,8 +29,8 @@ rec_transformer = FilteredRecurrentTransformer(
 
 predictor = TransformerClassifier(1, tr_dim, 4, 2, 512).cuda()
 
-gen = AddTask(500)
-test_gen = AddTask(500)
+gen = AddTask(300)
+test_gen = AddTask(300)
 
 writer = SummaryWriter(f"/home/nazar/pomoika/add_{time.time()}")
 
@@ -62,7 +62,7 @@ for i in range(30000):
     for s in states_generator:
         opt.zero_grad()
         pred = predictor(s)
-        loss = nn.MSELoss()(pred, Y)
+        loss = nn.MSELoss()(pred, Y.repeat(pred.shape[0] // B, 1))
         loss.backward(retain_graph=True)
         opt.step()
 
@@ -80,7 +80,7 @@ for i in range(30000):
             X, Y = make_batch(test_gen, B)
             s0 = torch.zeros(B, 30, tr_dim).cuda()
             *_, last_state = rec_transformer.forward(X, s0)
-            pred = predictor(last_state)
+            pred = predictor(last_state[last_state.shape[0] - B:])
             loss = nn.MSELoss()(pred, Y)
             print("loss:", loss.item())
             writer.add_scalar("test loss", loss.item(), i)

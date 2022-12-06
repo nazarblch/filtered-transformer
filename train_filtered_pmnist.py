@@ -62,7 +62,7 @@ for i in range(30000):
     for s in states_generator:
         opt.zero_grad()
         pred = predictor(s)
-        loss = nn.CrossEntropyLoss()(pred, Y)
+        loss = nn.CrossEntropyLoss()(pred, Y.repeat(pred.shape[0] // B))
         loss.backward(retain_graph=True)
         opt.step()
 
@@ -80,7 +80,7 @@ for i in range(30000):
             X, Y = make_batch(test_gen, B)
             s0 = torch.zeros(B, 30, tr_dim).cuda()
             *_, last_state = rec_transformer.forward(X, s0)
-            pred = predictor(last_state)
+            pred = predictor(last_state[last_state.shape[0] - B:])
             loss = nn.CrossEntropyLoss()(pred, Y)
             acc = AccuracyMetric()(pred, Y)
             print("loss:", loss.item(), "acc:", acc)

@@ -55,12 +55,15 @@ class BertRecurrentTransformer(RecurrentTransformer):
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
         return h['last_hidden_state']
 
-    def forward(self, x: Dict[str, Tensor], state: Tensor) -> Tensor:
-        h = self.extract_hidden(self.bert.encoder(x["input_ids"], output_hidden_states=True))
+    def forward(self, x, state: Tensor) -> Tensor:
+        # m = self.bert.get_extended_attention_mask(x["attention_mask"],
+        #                                           x["input_ids"].shape,
+        #                                           x["input_ids"].device)
+        h = self.extract_hidden(self.bert(input_ids=x["input_ids"], attention_mask=x["attention_mask"], output_hidden_states=False))
         assert state.shape[-1] == h.shape[-1]
         assert state.shape[0] == h.shape[0]
-        hs = torch.cat([h, state], dim=1)
-        return self.encoder(hs)['last_hidden_state'][:, h.shape[1]:]
+        hs = torch.cat([state, h, state], dim=1)
+        return self.encoder(hs)['last_hidden_state'][:, state.shape[1] + h.shape[1]:]
 
 class HierarchicalTransformer(nn.Module):
     def __init__(self, *transformers: nn.Transformer, dim: int, chunk_size: int):

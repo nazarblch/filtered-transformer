@@ -4,6 +4,7 @@ from typing import Callable, Optional
 import torch
 from torch import nn, Tensor
 
+from models.stoch_tensor import StochasticBinaryTensor
 from models.transformers import RecurrentTransformer
 
 
@@ -59,6 +60,11 @@ class FilteredRecurrentTransformer(RecurrentTransformer):
         self.filter_model = filter_model
         self.steps = rollout
         self.embedding = embedding
+        self.state_filter = nn.Sequential(
+            nn.Linear(768 * 2, 768),
+            nn.ReLU(),
+            nn.Linear(768, 2)
+        )
 
     def forward(self, data: Tensor, s: Tensor) -> Tensor:
 
@@ -72,8 +78,11 @@ class FilteredRecurrentTransformer(RecurrentTransformer):
 
         while fd is not None:
 
-            s = self.transformer(fd, s)
-            s_seq.append(s)
+            s1 = self.transformer(fd, s)
+            # m: Tensor = self.state_filter(torch.cat([s, s1], dim=-1)).softmax(-1)
+            s_seq.append(s1)
+            # s = m[:, :, 0][:, :, None] * s + m[:, :, 1][:, :, None] * s1
+            s = s1
 
             if step % self.steps == 0 and step > 0:
                 yield torch.cat(s_seq)
