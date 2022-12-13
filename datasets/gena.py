@@ -48,3 +48,20 @@ class HumanDataset2(Dataset):
         # ids = np.asarray(tok['input_ids'][0])
         # att = tok['attention_mask'][0]
         return {'text': text, 'label': self.labels[idx]}
+
+
+class MaskedLMDataset(Dataset):
+    def __init__(self, path, tokenizer):
+        self.tokenizer = tokenizer
+
+        df = pd.read_csv(path)
+        tok = tokenizer([
+            text for text in df['sequence']
+        ], add_special_tokens=True, truncation=True, max_length=400)
+        self.ids = np.asarray(tok['input_ids'], dtype=object)
+
+    def __len__(self):
+        return self.ids.shape[0]
+
+    def __getitem__(self, idx):
+        return torch.tensor(self.ids[idx], dtype=torch.long)

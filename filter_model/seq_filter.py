@@ -45,12 +45,14 @@ class DictSeqFilter(FilterModel):
         def proc_state(state: Tensor):
 
             if pos[0] >= length:
-                return None
+                return None, None
 
             fd = {k: v[:, pos[0]: pos[0] + self.size] for k, v in data.items()}
+            mask: Tensor = torch.zeros(state.shape[0], length, dtype=torch.bool, device=state.device)
+            mask[:, pos[0]: pos[0] + self.size] = True
             pos[0] += self.size
 
-            return fd
+            return fd, mask
 
         return proc_state
 

@@ -1,5 +1,6 @@
 import math
 from copy import deepcopy
+from functools import reduce
 
 import torch
 from gena_lm.modeling_bert import BertEncoder
@@ -7,10 +8,34 @@ from torch import nn, Tensor
 from torch.nn import TransformerEncoderLayer, TransformerEncoder
 from transformers import BertModel, BertConfig
 from typing import Dict
-
+from chrono_initialization import init as chrono_init
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
 from models.pos_encoding import PositionalEncoding2
+
+
+class RecurrentOutput:
+    def __init__(self, out: Tensor, state: Tensor):
+        self.state = state
+        self.out = out
+
+
+class RecurrentOutputSeq:
+    def __init__(self):
+        self.states = []
+        self.outs = []
+        self.masks = []
+
+    def append(self, os: RecurrentOutput, mask=None):
+        self.states.append(os.state)
+        self.outs.append(os.out)
+        self.masks.append(mask)
+
+    def get_cat_out(self):
+        return torch.cat(self.outs, dim=1)
+
+    def get_sum_mask(self):
+        return reduce(lambda m1, m2: m1 + m2, self.masks)
 
 
 class RecurrentTransformer(nn.Module):
@@ -28,7 +53,7 @@ class RecurrentTransformer(nn.Module):
             num_layers
         )
 
-    def forward(self, x: Tensor, state: Tensor) -> Tensor:
+    def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
         xs = torch.cat([x, state], dim=1)
         return self.encoder(xs)[:, x.shape[1]:]
 
@@ -45,7 +70,6 @@ class BertRecurrentTransformer(RecurrentTransformer):
         self.bert: BertModel = bert
 
         config = deepcopy(bert.config)
-
         config.num_attention_heads = nhead
         config.num_hidden_layers = num_layers
         config.intermediate_size = dim_feedforward
@@ -55,15 +79,73 @@ class BertRecurrentTransformer(RecurrentTransformer):
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
         return h['last_hidden_state']
 
+    def forward(self, x: Dict[str, Tensor], state: Tensor) -> RecurrentOutput:
+        if "attention_mask" in x:
+            m = self.bert.get_extended_attention_mask(x["attention_mask"],
+                                                      x["input_ids"].shape,
+                                                      x["input_ids"].device)
+        else:
+            m = None
+        h = self.extract_hidden(self.bert(input_ids=x["input_ids"], attention_mask=m, output_hidden_states=False))
+        assert state.shape[-1] == h.shape[-1]
+        assert state.shape[0] == h.shape[0]
+        shs = torch.cat([h, state], dim=1)
+        shs = self.encoder(shs)['last_hidden_state']
+        new_state = shs[:, h.shape[1]:]
+        out = shs[:, : h.shape[1]]
+
+        return RecurrentOutput(out, new_state)
+
+
+class BertRecurrentLSTM(RecurrentTransformer):
+
+    def __init__(self,
+                 bert: BertModel,
+                 num_layers: int = 3,
+                 dim_feedforward: int = 2048):
+        super().__init__()
+
+        self.bert: BertModel = bert
+        self.num_layers = num_layers
+        self.encoder = nn.LSTM(input_size=768, hidden_size=dim_feedforward, num_layers=num_layers, batch_first=True, dropout=0.1)
+        self.encoder = chrono_init(self.encoder, Tmax=4000)
+
+    def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
+        return h['last_hidden_state']
+
     def forward(self, x, state: Tensor) -> Tensor:
-        # m = self.bert.get_extended_attention_mask(x["attention_mask"],
-        #                                           x["input_ids"].shape,
-        #                                           x["input_ids"].device)
         h = self.extract_hidden(self.bert(input_ids=x["input_ids"], attention_mask=x["attention_mask"], output_hidden_states=False))
         assert state.shape[-1] == h.shape[-1]
         assert state.shape[0] == h.shape[0]
-        hs = torch.cat([state, h, state], dim=1)
-        return self.encoder(hs)['last_hidden_state'][:, state.shape[1] + h.shape[1]:]
+        h1, c1 = state.transpose(0, 1)[0:self.num_layers].contiguous(), state.transpose(0, 1)[self.num_layers:self.num_layers*2].contiguous()
+        out, (h2, c2) = self.encoder.forward(h, (h1, c1))
+        return torch.cat([h2, c2]).transpose(0, 1)
+
+
+class RecurrentTransformerFromBert(RecurrentTransformer):
+
+    def __init__(self,
+                 bert: BertModel,
+                 nhead: int = 4,
+                 num_layers: int = 2,
+                 dim_feedforward: int = 2048):
+        super().__init__()
+
+        config = deepcopy(bert.config)
+        config.num_attention_heads = nhead
+        config.num_hidden_layers = num_layers
+        config.intermediate_size = dim_feedforward
+
+        self.encoder = BertEncoder(config)
+
+    def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
+        xs = torch.cat([x, state], dim=1)
+        xs = self.encoder(xs)['last_hidden_state']
+        new_state = xs[:, x.shape[1]:]
+        out = xs[:, : x.shape[1]]
+
+        return RecurrentOutput(out, new_state)
+
 
 class HierarchicalTransformer(nn.Module):
     def __init__(self, *transformers: nn.Transformer, dim: int, chunk_size: int):

@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Callable, Optional, Iterator
 
 import torch
 from torch import nn, Tensor
 
 from models.stoch_tensor import StochasticBinaryTensor
-from models.transformers import RecurrentTransformer
+from models.transformers import RecurrentTransformer, RecurrentOutputSeq
 
 
 class FilterModel(nn.Module, ABC):
@@ -66,32 +66,32 @@ class FilteredRecurrentTransformer(RecurrentTransformer):
             nn.Linear(768, 2)
         )
 
-    def forward(self, data: Tensor, s: Tensor) -> Tensor:
+    def forward(self, data: Tensor, s: Tensor) -> Iterator[RecurrentOutputSeq]:
 
         if self.embedding is not None:
             data = self.embedding(data)
         proc_state = self.filter_model(data)
 
         step = 1
-        fd = proc_state(s)
-        s_seq = []
+        fd, mask = proc_state(s)
+        s_seq = RecurrentOutputSeq()
 
         while fd is not None:
 
-            s1 = self.transformer(fd, s)
+            os = self.transformer.forward(fd, s)
             # m: Tensor = self.state_filter(torch.cat([s, s1], dim=-1)).softmax(-1)
-            s_seq.append(s1)
+            s_seq.append(os, mask)
             # s = m[:, :, 0][:, :, None] * s + m[:, :, 1][:, :, None] * s1
-            s = s1
+            s = os.state
 
             if step % self.steps == 0 and step > 0:
-                yield torch.cat(s_seq)
+                yield s_seq
                 s = s.detach()
-                s_seq = []
+                s_seq = RecurrentOutputSeq()
 
-            fd = proc_state(s)
+            fd, mask = proc_state(s)
 
             if fd is None and step % self.steps != 0 and step > 0:
-                yield torch.cat(s_seq)
+                yield s_seq
 
             step += 1

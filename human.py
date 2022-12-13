@@ -17,7 +17,7 @@ from datasets.gena import HumanDataset, HumanDataset2
 from filter_model.base import FilterModel, FilteredRecurrentTransformer, NStepFilterObject
 from filter_model.chunk_filter import BertChunkFilter
 from filter_model.seq_filter import DictSeqFilterBidirectional, DictSeqFilter
-from models.transformers import TransformerClassifier, BertClassifier, BertRecurrentTransformer
+from models.transformers import TransformerClassifier, BertClassifier, BertRecurrentTransformer, BertRecurrentLSTM
 
 torch.cuda.set_device("cuda:0")
 
@@ -27,23 +27,23 @@ bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Inst
 # filter_model = BertChunkFilter(bert_model, 40, 2)
 
 rec_transformer = FilteredRecurrentTransformer(
-    BertRecurrentTransformer(bert_model, 4, 2, bert_model.config.hidden_size),
+    BertRecurrentLSTM(bert_model, 3, bert_model.config.hidden_size),
     # NStepFilterObject(6)(filter_model),
-    DictSeqFilter(100, "input_ids"),
+    DictSeqFilter(200, "input_ids"),
     embedding=None,
     rollout=2
 ).cuda()
 head = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
 
 opt = torch.optim.Adam([
-    {"params": rec_transformer.transformer.bert.parameters(), "lr": 2e-6},
+    {"params": rec_transformer.transformer.bert.parameters(), "lr": 4e-6},
     {"params": head.parameters(), "lr": 2e-5},
     {"params": rec_transformer.transformer.encoder.parameters(), "lr": 2e-5},
     {"params": rec_transformer.state_filter.parameters(), "lr": 2e-5},
     # {"params": filter_model.encoder.parameters(), "lr": 1e-5},
     # {"params": filter_model.head.parameters(), "lr": 1e-5},
 ])
-scheduler = StepLR(opt, step_size=200, gamma=0.95)
+# scheduler = StepLR(opt, step_size=200, gamma=0.96)
 
 data = HumanDataset2(
     [
@@ -69,7 +69,7 @@ def custom_collate(data):
     return inputs["input_ids"], inputs["attention_mask"], labels
 
 
-train_loader = DataLoader(train_data, shuffle=True, batch_size=64, collate_fn=custom_collate)
+train_loader = DataLoader(train_data, shuffle=True, batch_size=32, collate_fn=custom_collate)
 test_loader = DataLoader(test_data, shuffle=False, batch_size=256, collate_fn=custom_collate)
 
 writer = SummaryWriter(f"/home/nazar/pomoika/gena_2000_seq_tr_{time.time()}")
@@ -97,7 +97,7 @@ for epoch_num in range(100):
             batch_loss.backward()
             opt.step()
 
-        scheduler.step()
+        # scheduler.step()
 
         acc = (pred_1[pred_1.shape[0] - B:].argmax(dim=1) == y).sum().item() / X.shape[0]
         writer.add_scalar("train acc", acc, step)
