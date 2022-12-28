@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from typing import List
 
 import tensorflow as tf
 import numpy as np
@@ -12,10 +13,10 @@ import functools
 import os
 
 from Bio import SeqIO, SeqRecord
+from torch.utils.data import Dataset
 from tqdm import tqdm
 
 RECORDS_PER_TFRF = 256
-
 
 def get_metadata(path: str) -> dict:
     """Open a file with metadata for a given dataset"""
@@ -107,25 +108,23 @@ def process_record(record,
             return ''
         return str(genome[chrom].seq[start:end]).upper()
 
-    def around_center(start: int, end: int, length: int) -> list[int]:
-        """Place new region at the center of a given region"""
-        middle = (start + end) // 2
-        new_start = middle - length // 2
-        new_end = middle + length // 2
-        return (new_start, new_end)
+    # def around_center(start: int, end: int, length: int) -> list[int]:
+    #     """Place new region at the center of a given region"""
+    #     middle = (start + end) // 2
+    #     new_start = middle - length // 2
+    #     new_end = middle + length // 2
+    #     return (new_start, new_end)
 
     target = record['target'].numpy()
 
     (chrom, start, end, split) = coordinates.iloc[index, :]
-    (start, end) = around_center(start, end, seq_len)
+    # (start, end) = around_center(start, end, seq_len)
     seq = extract_sequence(genome, chrom, start, end)
 
     if not seq:
         return dict()
 
-    # we operate in BED coords (0-based, noninclusive end)
-    # but here need 1-based, inclusive end
-    coords = f"{chrom}:{start + 1}-{end}"
+    coords = 8192 + np.arange(target.shape[0]) * 128 + 64
 
     return {'seq': seq, 'target': target, 'coordinates': coords}
 
@@ -230,23 +229,22 @@ def export_hdf5(records: list, out_file: str) -> None:
         for index, record in enumerate(tqdm(records)):
             g = f.create_group(str(index))
             g.create_dataset('seq', shape=(), data=record['seq'])
-            g.create_dataset('target', data=record['target'],
-                             compression='gzip')
-            g.attrs['coordinates'] = record['coordinates']
+            g.create_dataset('target', data=record['target'], compression='gzip')
+            g.create_dataset('coordinates', data=record['coordinates'], compression='gzip')
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--base-path', type=str,
-                        help='Path to the organism subfolder of Basenji dataset', default="/home/nazar")
-    parser.add_argument('--subset', choices=['train', 'test', 'valid'],
-                        help='Name of data subset', default='valid')
+    parser.add_argument('--base-path', type=str, required=True,
+                        help='Path to the organism subfolder of Basenji dataset')
+    parser.add_argument('--subset', choices=['train', 'test', 'valid'], required=True,
+                        help='Name of data subset')
     parser.add_argument('--tfr', type=str,
-                        help='Path to the one TFRecord file to convert', default='/home/nazar/valid-0-0.tfr')
-    parser.add_argument('--genome', type=str,
-                        help='Path to the corresponding reference genome (in fasta)', default="/home/nazar/hg38.fa")
-    parser.add_argument('--sequence-length', type=int, default='100000',
+                        help='Path to the one TFRecord file to convert')
+    parser.add_argument('--genome', type=str, required=True,
+                        help='Path to the corresponding reference genome (in fasta)')
+    parser.add_argument('--sequence-length', type=int, default='20000',
                         help='Length of sequences to get from the reference')
 
 
@@ -262,7 +260,8 @@ def main():
     print(f"Processing records from one TFR file ({args.tfr}):")
     records = process_tfr(args.tfr, args.base_path, args.subset,
                           genome, args.sequence_length)
-    print(len(records[0]["seq"]), records[0]["target"].shape)
+
+    export_hdf5(records, "/home/nazar/PycharmProjects/enformer/train_0.h5")
 
 
 if __name__ == '__main__':

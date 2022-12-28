@@ -4,10 +4,12 @@ from functools import reduce
 
 import torch
 from gena_lm.modeling_bert import BertEncoder
+from tokenizers import Tokenizer
 from torch import nn, Tensor
 from torch.nn import TransformerEncoderLayer, TransformerEncoder
-from transformers import BertModel, BertConfig
-from typing import Dict
+from torch.nn.utils.rnn import pad_sequence
+from transformers import BertModel, BertConfig, PreTrainedTokenizer
+from typing import Dict, List
 from chrono_initialization import init as chrono_init
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
@@ -80,13 +82,7 @@ class BertRecurrentTransformer(RecurrentTransformer):
         return h['last_hidden_state']
 
     def forward(self, x: Dict[str, Tensor], state: Tensor) -> RecurrentOutput:
-        if "attention_mask" in x:
-            m = self.bert.get_extended_attention_mask(x["attention_mask"],
-                                                      x["input_ids"].shape,
-                                                      x["input_ids"].device)
-        else:
-            m = None
-        h = self.extract_hidden(self.bert(input_ids=x["input_ids"], attention_mask=m, output_hidden_states=False))
+        h = self.extract_hidden(self.bert(input_ids=x["input_ids"], attention_mask=x['attention_mask'], output_hidden_states=False))
         assert state.shape[-1] == h.shape[-1]
         assert state.shape[0] == h.shape[0]
         shs = torch.cat([h, state], dim=1)
@@ -95,6 +91,22 @@ class BertRecurrentTransformer(RecurrentTransformer):
         out = shs[:, : h.shape[1]]
 
         return RecurrentOutput(out, new_state)
+
+
+class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):
+
+    def __init__(self, bert: BertModel, tokenizer: PreTrainedTokenizer, max_len: int, nhead: int = 4, num_layers: int = 2, dim_feedforward: int = 2048):
+        super().__init__(bert, nhead, num_layers, dim_feedforward)
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+    def forward(self, text_seq: List[str], state: Tensor) -> RecurrentOutput:
+        tokens = self.tokenizer(text_seq, max_length=self.max_len, truncation=True)
+        res = {"input_ids": pad_sequence([torch.tensor(t) for t in tokens["input_ids"]], batch_first=True).cuda(),
+               "attention_mask": pad_sequence([torch.tensor(t) for t in tokens["attention_mask"]], batch_first=True,
+                                              padding_value=0).cuda()}
+
+        return super().forward(res, state)
 
 
 class BertRecurrentLSTM(RecurrentTransformer):
