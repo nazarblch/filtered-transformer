@@ -9,6 +9,7 @@ from models.transformers import RecurrentTransformer, RecurrentOutputSeq
 
 
 class FilterModel(nn.Module, ABC):
+
     @abstractmethod
     def forward(self, data: Tensor) -> Callable[[Tensor], Optional[Tensor]]:
         pass

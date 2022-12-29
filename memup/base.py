@@ -13,9 +13,20 @@ TDWithMemory = Tuple[SD, MemoryOut, Tensor]
 
 
 class SeqDataFilter(nn.Module, ABC, Generic[SD]):
+
+    @abstractmethod
+    def filter(self, data: SD, state: State, *args) -> Optional[SD]:
+        pass
+
+    @abstractmethod
+    def update(self, filtered_data: SD, state: State, *args) -> State:
+        pass
+
     @abstractmethod
     def forward(self, data: SD, state: State) -> Tuple[Optional[SD], State]:
-        pass
+        filtered_data = self.filter(data, state)
+        new_state = self.update(filtered_data, state)
+        return filtered_data, new_state
 
 
 class MemUpMemory(nn.Module, ABC, Generic[SD]):
