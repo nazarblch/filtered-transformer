@@ -18,7 +18,7 @@ from models.transformers import BertRecurrentTransformer, RecurrentTransformerFr
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert: BertModel = BertModel.from_pretrained('AIRI-Institute/gena-lm-bert-base')
-mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, 300, 12, 4, bert.config.hidden_size * 2).cuda()
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, 350, 12, 4, bert.config.hidden_size * 2).cuda()
 
 
 def pearson_corr_coef(x, y, dim=1, reduce_dims=(-1,)):
@@ -44,9 +44,9 @@ class Predictor(nn.Module):
 predictor = Predictor().cuda()
 
 opt = torch.optim.Adam([
-    {"params": mem_transformer.bert.parameters(), "lr": 4e-6},
-    {"params": mem_transformer.encoder.parameters(), "lr": 2e-5},
-    {"params": predictor.parameters(), "lr": 2e-5}
+    {"params": mem_transformer.bert.parameters(), "lr": 1e-5},
+    {"params": mem_transformer.encoder.parameters(), "lr": 5e-5},
+    {"params": predictor.parameters(), "lr": 5e-5}
 ])
 
 
@@ -65,7 +65,7 @@ DataTypeWithMemory = Tuple[DataType, Tensor, Tensor]
 class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
 
     def __init__(self):
-        super().__init__(BS, padding=BS // 10)
+        super().__init__(BS, padding=BS // 5)
 
     def filter_data(self, data: DataType, i1: int, i2: int, i1_pad: int, i2_pad: int) -> DataType:
         pad_text = [t[i1_pad:i2_pad] for t in data.text]
@@ -95,12 +95,12 @@ class MemUpLossImpl(MemUpLoss):
         super().__init__()
         self.use_extra_targets = use_extra_targets
 
-    def loss(self, data, state, out, target):
+    def loss(self, data, state, out, target, coef=100):
         target = target.cuda()
         out = torch.cat([out] * len(data), 0)
         target = torch.cat([target] * len(data), 0)
         pred = predictor(out, state)
-        loss = -pearson_corr_coef(pred, target).mean() * 100
+        loss = -pearson_corr_coef(pred, target).mean() * coef
         loss = loss + nn.PoissonNLLLoss(log_input=False)(pred, target)
         return loss, pearson_corr_coef(pred, target).mean().item(), nn.PoissonNLLLoss(log_input=False)(pred, target).item()
 
@@ -112,7 +112,7 @@ class MemUpLossImpl(MemUpLoss):
         loss = 0
 
         if out.shape[1] > 0:
-            loss, pearson_corr, poisson_nll = self.loss(data, s0, out, target)
+            loss, pearson_corr, poisson_nll = self.loss(data, s0, out, target, coef=10)
             info["pearson_corr current"] = pearson_corr
             info["poisson_nll current"] = poisson_nll
 
