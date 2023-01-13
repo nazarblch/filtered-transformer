@@ -13,7 +13,7 @@ class EnformerDataset(Dataset):
 
         for path in folds:
             print(path)
-            with h5py.File("/home/nazar/PycharmProjects/enformer/train_0.h5", "r") as f:
+            with h5py.File(path, "r") as f:
                 for key in f.keys():
                     self.targets.append(f[key]["target"][()])
                     self.coords.append(f[key]["coordinates"][()])

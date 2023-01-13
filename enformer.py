@@ -3,6 +3,7 @@ from typing import Iterator, Tuple, List, Callable, Optional
 import torch
 from gena_lm.modeling_bert import BertModel, BertForSequenceClassification
 from torch import Tensor, nn
+import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
@@ -12,7 +13,7 @@ from models.transformers import BertRecurrentTransformer, RecurrentTransformerFr
     BertRecurrentTransformerWithTokenizer
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
-train_data = EnformerDataset(["/home/nazar/PycharmProjects/enformer/train_0.h5"])
+train_data = EnformerDataset(["/home/jovyan/enformer/h5/train_0.h5"])
 
 train_loader = DataLoader(train_data, shuffle=True, batch_size=16)
 
@@ -31,7 +32,7 @@ class Predictor(nn.Module):
 
     def forward(self, x, state):
         out = self.encoder.forward(x, state).out
-        return self.head(out)
+        return self.head(out).relu()
 
 
 predictor = Predictor().cuda()
@@ -60,6 +61,20 @@ def sample_extra_train_data(count: int, context: Tensor, errors: Tensor, target:
 DataType = namedtuple("DataType", ["text", "target", "coords"])
 DataTypeWithMemory = Tuple[DataType, Tensor, Tensor]
 
+def log(t, eps = 1e-20):
+    return torch.log(t.clamp(min = eps))
+
+def poisson_loss(pred, target, reduction="mean"):
+    if reduction == "none":
+        return pred - target * log(pred)
+    elif reduction == "mean":
+        return (pred - target * log(pred)).mean()
+
+def pearson_corr_coef(x, y, dim = 1, reduce_dims = (-1,)):
+    x_centered = x - x.mean(dim = dim, keepdim = True)
+    y_centered = y - y.mean(dim = dim, keepdim = True)
+    return F.cosine_similarity(x_centered, y_centered, dim = dim).mean(dim = reduce_dims)
+
 
 class SeqDataFilterImpl(SeqDataFilter[DataType]):
 
@@ -87,15 +102,15 @@ class SeqDataFilterImpl(SeqDataFilter[DataType]):
         self.m = self.m * 0.99 + torch.mean(data.target, dim=0, keepdim=True) * 0.01
         self.sd = self.sd * 0.99 + torch.std(data.target, dim=0, keepdim=True) * 0.01
         m, sd = self.m, self.sd
-        errors = nn.MSELoss(reduction='none')((pred.cpu() - m)/sd, (data.target - m)/sd).mean(dim=2)
-        errors1 = nn.MSELoss(reduction='none')(pred.cpu(), data.target).mean(dim=2)
-        print("err", errors1.mean().item())
+        # errors = torch.nn.PoissonNLLLoss(log_input=False, reduction="none")((pred.cpu() - m)/sd, (data.target - m)/sd).mean(dim=2)
+        errors = torch.nn.PoissonNLLLoss(log_input=False, reduction="none")(pred.cpu(), data.target).mean(dim=2)
+        print("err", errors.mean().item())
 
         return context.cpu(), errors.cpu()
 
-    def extend_data(self, context, errors, target) -> Tuple[Tensor, Tensor]:
+    def extend_data(self, context, errors, target, topk) -> Tuple[Tensor, Tensor]:
 
-        o, t = sample_extra_train_data(TOPK, context, errors, target)
+        o, t = sample_extra_train_data(topk, context, errors, target)
         return o, t
 
     def filter_data(self, state: Tensor, data, step: int, max_len: int) -> DataType:
@@ -124,7 +139,7 @@ class SeqDataFilterImpl(SeqDataFilter[DataType]):
 
         filtered_data = self.filter_data(state.state, data, step, T)
         if (step + 1) % 2 == 0:
-            context, context_target = self.extend_data(state.extra["context"], state.extra["err"], data.target)
+            context, context_target = self.extend_data(state.extra["context"], state.extra["err"], data.target, TOPK)
             state.extra["context_selected"], state.extra["context_target"] = context, context_target
 
         state.extra["step"] = step + 1
@@ -146,13 +161,16 @@ class MemUpLossImpl(MemUpLoss):
         context = state.extra["context_selected"].cuda()
         context_target = state.extra["context_target"]
 
-        out = torch.cat([out, context], 1)
+        step = state.extra["step"]
+
+        if step > 500:
+            out = torch.cat([out, context], 1)
+            target = torch.cat([target, context_target], 1)
         out = torch.cat([out]*len(data), 0)
-        target = torch.cat([target, context_target], 1)
         target = torch.cat([target] * len(data), 0)
 
         pred = predictor(out, s0)
-        loss = nn.MSELoss()(pred, target.cuda())
+        loss = poisson_loss(pred, target.cuda(), reduction="mean")
 
         return loss
 
@@ -173,7 +191,7 @@ for text1, target1, coords1 in train_loader:
     while not done:
         opt.zero_grad()
         loss, state, done = memup_iter.forward(DataType(text1, target1, coords1), state)
-        print(loss.item())
         if loss is not None:
+            print(loss.item())
             loss.backward()
         opt.step()
