@@ -10,7 +10,6 @@ from torch.nn import TransformerEncoderLayer, TransformerEncoder
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BertModel, BertConfig, PreTrainedTokenizer
 from typing import Dict, List
-from chrono_initialization import init as chrono_init
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
 from models.pos_encoding import PositionalEncoding2
@@ -42,22 +41,11 @@ class RecurrentOutputSeq:
 
 class RecurrentTransformer(nn.Module):
 
-    def __init__(self,
-                 d_model: int = 512,
-                 nhead: int = 8,
-                 num_layers: int = 6,
-                 dim_feedforward: int = 2048,
-                 dropout: float = 0.1):
+    def __init__(self):
         super().__init__()
 
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True),
-            num_layers
-        )
-
     def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
-        xs = torch.cat([x, state], dim=1)
-        return self.encoder(xs)[:, x.shape[1]:]
+        pass
 
 
 class BertRecurrentTransformer(RecurrentTransformer):
