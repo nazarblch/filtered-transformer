@@ -21,6 +21,12 @@ class RecurrentOutput:
         self.out = out
 
 
+class RecurrentOutputWithContext(RecurrentOutput):
+    def __init__(self, out: Tensor, state: Tensor, context: Tensor):
+        super().__init__(out, state)
+        self.context = context
+
+
 class RecurrentOutputSeq:
     def __init__(self):
         self.states = []
@@ -69,7 +75,7 @@ class BertRecurrentTransformer(RecurrentTransformer):
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
         return h['last_hidden_state']
 
-    def forward(self, x: Dict[str, Tensor], state: Tensor) -> RecurrentOutput:
+    def forward(self, x: Dict[str, Tensor], state: Tensor) -> RecurrentOutputWithContext:
         h = self.extract_hidden(self.bert(input_ids=x["input_ids"], attention_mask=x['attention_mask'], output_hidden_states=False))
         assert state.shape[-1] == h.shape[-1]
         assert state.shape[0] == h.shape[0]
@@ -78,7 +84,7 @@ class BertRecurrentTransformer(RecurrentTransformer):
         new_state = shs[:, h.shape[1]:]
         out = shs[:, : h.shape[1]]
 
-        return RecurrentOutput(out, new_state)
+        return RecurrentOutputWithContext(out, new_state, h)
 
 
 class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):
@@ -88,7 +94,7 @@ class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):
         self.tokenizer = tokenizer
         self.max_len = max_len
 
-    def forward(self, text_seq: List[str], state: Tensor) -> RecurrentOutput:
+    def forward(self, text_seq: List[str], state: Tensor) -> RecurrentOutputWithContext:
         tokens = self.tokenizer(text_seq, max_length=self.max_len, truncation=True)
         res = {"input_ids": pad_sequence([torch.tensor(t) for t in tokens["input_ids"]], batch_first=True).cuda(),
                "attention_mask": pad_sequence([torch.tensor(t) for t in tokens["attention_mask"]], batch_first=True,

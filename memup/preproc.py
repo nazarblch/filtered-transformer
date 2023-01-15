@@ -74,18 +74,16 @@ class ErrorPreprocessor(InfoUpdate[SD]):
     def forward(self, data: SD, state: State, info: Info, *args) -> Info:
         print("compute errors")
         state = info[self.last_state_key].cuda()
-        predictions = []
+        out_collection = []
         for out in info[self.key]:
             if out.shape[1] > 0:
-                pred = self.predictor(out.cuda(), state)
-                predictions.append(pred.cpu())
+                out_collection.append(out.cuda())
 
-        predictions = torch.cat(predictions, 1)
+        predictions = self.predictor.forward(torch.cat(out_collection, 1), state).cpu()
         target = self.get_target(data)
         assert predictions.shape[1] == target.shape[1]
         errors = self.metric(predictions, target).mean(dim=2)
         info[self.errors_key] = errors
-        print("errors", errors.mean())
 
         return info
 
@@ -108,8 +106,10 @@ class TargetsSampler(InfoUpdate[SD]):
         sample = torch.multinomial(probs, count, replacement=False)
         index = sample[:, :, None]
         B = context.shape[0]
-        # print("selected samples 0: ", index[0, :, 0].numpy())
-        # print("selected samples 1: ", index[1, :, 0].numpy())
+
+        selected_errors = torch.gather(errors, 1, index[:, :, 0]).reshape(B, count)
+        print("errors:", errors.mean(), "selected_errors:", selected_errors.mean().item())
+
         return torch.gather(context, 1, index.expand(-1, -1, context.shape[-1])).reshape(B, count, context.shape[-1]), \
                torch.gather(target, 1, index.expand(-1, -1, target.shape[-1])).reshape(B, count, target.shape[-1])
 

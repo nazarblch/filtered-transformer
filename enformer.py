@@ -18,7 +18,7 @@ from models.transformers import BertRecurrentTransformer, RecurrentTransformerFr
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert: BertModel = BertModel.from_pretrained('AIRI-Institute/gena-lm-bert-base')
-mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, 350, 12, 4, bert.config.hidden_size * 2).cuda()
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, 320, 8, 4, bert.config.hidden_size * 2).cuda()
 
 
 def pearson_corr_coef(x, y, dim=1, reduce_dims=(-1,)):
@@ -31,8 +31,10 @@ class Predictor(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.encoder = RecurrentTransformerFromBert(bert, 12, 2, bert.config.hidden_size * 2)
+        self.encoder = RecurrentTransformerFromBert(bert, 8, 4, bert.config.hidden_size * 2)
         self.head = nn.Sequential(
+            nn.Linear(bert.config.hidden_size, bert.config.hidden_size),
+            nn.ReLU(),
             nn.Linear(bert.config.hidden_size, 5313)
         )
 
@@ -44,9 +46,9 @@ class Predictor(nn.Module):
 predictor = Predictor().cuda()
 
 opt = torch.optim.Adam([
-    {"params": mem_transformer.bert.parameters(), "lr": 1e-5},
-    {"params": mem_transformer.encoder.parameters(), "lr": 5e-5},
-    {"params": predictor.parameters(), "lr": 5e-5}
+    {"params": mem_transformer.bert.parameters(), "lr": 5e-6},
+    {"params": mem_transformer.encoder.parameters(), "lr": 3e-5},
+    {"params": predictor.parameters(), "lr": 3e-5}
 ])
 
 
@@ -54,7 +56,7 @@ writer = SummaryWriter(f"/home/jovyan/pomoika/enformer_{time.time()}")
 
 
 device = torch.device("cuda")
-BS = 1280
+BS = 1000
 TOPK = 100
 
 
@@ -112,7 +114,7 @@ class MemUpLossImpl(MemUpLoss):
         loss = 0
 
         if out.shape[1] > 0:
-            loss, pearson_corr, poisson_nll = self.loss(data, s0, out, target, coef=10)
+            loss, pearson_corr, poisson_nll = self.loss(data, s0, out, target)
             info["pearson_corr current"] = pearson_corr
             info["poisson_nll current"] = poisson_nll
 
@@ -165,8 +167,8 @@ class EvalLossImpl(MemUpLoss):
         return p_err
 
 
-mem_acc = Accumulator(mem_transformer, decay=0.9)
-pred_acc = Accumulator(predictor, decay=0.9)
+mem_acc = Accumulator(mem_transformer, decay=0.95)
+pred_acc = Accumulator(predictor, decay=0.95)
 
 
 memup_iter_eval = MemUpLossIterator[DataType](
@@ -243,8 +245,16 @@ def train_one_epoch(memup_iter, train_loader, global_step):
 
 global_step = 0
 
-for i in range(133):
+for i in range(1000):
     print("epoch", i)
-    train_data = EnformerDataset([f"/home/jovyan/enformer/h5/train_{i}.h5"])
+    if i % 133 == 108:
+        continue
+    train_data = EnformerDataset([f"/home/jovyan/enformer/h5/train_{i % 133}.h5"])
     train_loader = DataLoader(train_data, shuffle=True, batch_size=64)
     global_step = train_one_epoch(memup_iter_with_extra_targets, train_loader, global_step)
+
+    if i % 133 == 0:
+        torch.save({
+            "mem": mem_transformer.state_dict(),
+            "pred": predictor.state_dict()
+        }, "/home/jovyan/enformer/model.pt")
