@@ -28,10 +28,9 @@ class HumanDataset(Dataset):
 
 class HumanDataset2(Dataset):
 
-    def __init__(self, folds: List[str], tokenizer):
+    def __init__(self, folds: List[str]):
         self.labels = []
         self.texts = []
-        self.tokenizer = tokenizer
 
         for path in folds:
             df = pd.read_csv(path)
@@ -44,9 +43,6 @@ class HumanDataset2(Dataset):
 
     def __getitem__(self, idx):
         text = self.texts[idx]
-        # tok = self.tokenizer(text, return_tensors="pt", padding='max_length', max_length=2800)
-        # ids = np.asarray(tok['input_ids'][0])
-        # att = tok['attention_mask'][0]
         return {'text': text, 'label': self.labels[idx]}
 
 
