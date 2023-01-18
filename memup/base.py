@@ -71,7 +71,7 @@ class MemUpLossIterator(Generic[SD]):
                 break
 
         loss = self.loss(data_collection, info)
-        if torch.isnan(loss):
+        if loss is None or torch.isnan(loss):
             loss = None
 
         state = state.detach()

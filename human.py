@@ -20,6 +20,7 @@ from filter_model.chunk_filter import BertChunkFilter
 from filter_model.seq_filter import DictSeqFilterBidirectional, DictSeqFilter
 from memup.base import MemUpMemory, State, MemUpLoss, Info, MemUpLossIterator
 from memup.data_filters import SlidingWindowFilter
+from memup.loss import PredictorLossStateOnly, LossModule, EvalLossStateOnly
 from memup.preproc import IncrementStep
 from metrics.accuracy import AccuracyMetric
 from models.transformers import TransformerClassifier, BertClassifier, BertRecurrentTransformer, BertRecurrentLSTM, \
@@ -29,8 +30,12 @@ torch.cuda.set_device("cuda:0")
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
-mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, 300, 4, 3, bert_model.config.hidden_size * 2).cuda()
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, 256, 4, 3, bert_model.config.hidden_size * 2).cuda()
 head = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
+
+weights = torch.load("/home/slavic/PycharmProjects/promoter.pt")
+mem_transformer.load_state_dict(weights["mem"])
+head.load_state_dict(weights["pred"])
 
 opt = torch.optim.Adam([
     {"params": mem_transformer.bert.parameters(), "lr": 4e-6},
@@ -58,7 +63,7 @@ test_loader = DataLoader(test_data, shuffle=False, batch_size=256)
 
 writer = SummaryWriter(f"/home/slavic/pomoika/gena_16000_seq_tr_{time.time()}")
 device = torch.device("cuda")
-BS = 1000
+BS = 800
 DataType = namedtuple("DataType", ["text", "target"])
 DataTypeWithMemory = Tuple[DataType, Tensor, Tensor]
 
@@ -185,6 +190,10 @@ def train_one_epoch(memup_iter, train_loader, global_step):
 
         if global_step % 1000 == 0 and global_step > 0:
             evaluate(global_step)
+            torch.save({
+                "mem": mem_transformer.state_dict(),
+                "pred": head.state_dict()
+            }, "/home/slavic/PycharmProjects/promoter.pt")
 
         state = torch.zeros(data1["label"].shape[0], 50, bert_model.config.hidden_size, device=device)
         data1 = DataType(data1["text"], data1["label"])
@@ -212,10 +221,5 @@ global_step = 0
 for i in range(1000):
     print("epoch", i)
     global_step = train_one_epoch(memup_iter, train_loader, global_step)
-
-    torch.save({
-        "mem": mem_transformer.state_dict(),
-        "pred": head.state_dict()
-    }, "/home/slavic/PycharmProjects/promoter.pt")
 
 
