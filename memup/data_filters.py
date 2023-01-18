@@ -16,7 +16,7 @@ class SlidingWindowFilter(SeqDataFilter[SD], ABC):
 
     def forward(self, data: SD, state: State, info: Info, *args) -> Tuple[SD, Done]:
         BS = self.window_size
-        T = len(data.text[0])
+        T = data.length
         assert "step" in info
         step = info["step"]
         assert step * BS < T

@@ -1,7 +1,6 @@
 import math
 from copy import deepcopy
 from functools import reduce
-
 import torch
 from gena_lm.modeling_bert import BertEncoder
 from tokenizers import Tokenizer
@@ -23,8 +22,7 @@ class RecurrentOutput:
 
 class RecurrentOutputWithContext(RecurrentOutput):
     def __init__(self, out: Tensor, state: Tensor, context: Tensor):
-        self.state = state
-        self.out = out
+        super().__init__(out, state)
         self.context = context
 
 
@@ -53,6 +51,31 @@ class RecurrentTransformer(nn.Module):
 
     def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
         pass
+
+
+
+class TorchRecurrentTransformer(RecurrentTransformer):
+
+    def __init__(self,
+                 d_model: int = 512,
+                 nhead: int = 8,
+                 num_layers: int = 6,
+                 dim_feedforward: int = 2048,
+                 dropout: float = 0.1):
+        super().__init__()
+        self.pos_encoder = PositionalEncoding2(d_model)
+
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout),
+            num_layers
+        )
+
+    def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
+        x = self.pos_encoder(x) * math.sqrt(x.shape[1])
+        xs = torch.cat([x, state], dim=1)
+        res = self.encoder(xs.transpose(0, 1)).transpose(0, 1)
+
+        return RecurrentOutput(res[:, :x.shape[1]], res[:, x.shape[1]:])
 
 
 class BertRecurrentTransformer(RecurrentTransformer):
@@ -95,7 +118,7 @@ class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):
         self.tokenizer = tokenizer
         self.max_len = max_len
 
-    def forward(self, text_seq: List[str], state: Tensor) -> RecurrentOutput:
+    def forward(self, text_seq: List[str], state: Tensor) -> RecurrentOutputWithContext:
         tokens = self.tokenizer(text_seq, max_length=self.max_len, truncation=True)
         res = {"input_ids": pad_sequence([torch.tensor(t) for t in tokens["input_ids"]], batch_first=True).cuda(),
                "attention_mask": pad_sequence([torch.tensor(t) for t in tokens["attention_mask"]], batch_first=True,

@@ -12,27 +12,25 @@ from datasets.enformer_h5 import EnformerDataset
 from memup.accumulator import Accumulator
 from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, MemUpLossIterator, State, Info, Done, InfoUpdate
 from memup.data_filters import SlidingWindowFilter
+from memup.loss import PredictorLossWithContext, LossModule, EvalLoss
 from memup.preproc import ContextPreprocessor, NStepUpdate, IncrementStep, ErrorPreprocessor, TargetsSampler
+from metrics.pearson import PearsonCorrLoss, PearsonCorrMetric
 from models.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
     BertRecurrentTransformerWithTokenizer
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert: BertModel = BertModel.from_pretrained('AIRI-Institute/gena-lm-bert-base')
-mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, 350, 12, 4, bert.config.hidden_size * 2).cuda()
-
-
-def pearson_corr_coef(x, y, dim=1, reduce_dims=(-1,)):
-    x_centered = x - x.mean(dim=dim, keepdim=True)
-    y_centered = y - y.mean(dim=dim, keepdim=True)
-    return torch.nn.functional.cosine_similarity(x_centered, y_centered, dim=dim).mean(dim=reduce_dims)
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, 320, 8, 4, bert.config.hidden_size * 2).cuda()
 
 
 class Predictor(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.encoder = RecurrentTransformerFromBert(bert, 12, 2, bert.config.hidden_size * 2)
+        self.encoder = RecurrentTransformerFromBert(bert, 8, 4, bert.config.hidden_size * 2)
         self.head = nn.Sequential(
+            nn.Linear(bert.config.hidden_size, bert.config.hidden_size),
+            nn.ReLU(),
             nn.Linear(bert.config.hidden_size, 5313)
         )
 
@@ -44,9 +42,9 @@ class Predictor(nn.Module):
 predictor = Predictor().cuda()
 
 opt = torch.optim.Adam([
-    {"params": mem_transformer.bert.parameters(), "lr": 1e-5},
-    {"params": mem_transformer.encoder.parameters(), "lr": 5e-5},
-    {"params": predictor.parameters(), "lr": 5e-5}
+    {"params": mem_transformer.bert.parameters(), "lr": 5e-6},
+    {"params": mem_transformer.encoder.parameters(), "lr": 3e-5},
+    {"params": predictor.parameters(), "lr": 3e-5}
 ])
 
 
@@ -54,7 +52,7 @@ writer = SummaryWriter(f"/home/jovyan/pomoika/enformer_{time.time()}")
 
 
 device = torch.device("cuda")
-BS = 1280
+BS = 1000
 TOPK = 100
 
 
@@ -89,90 +87,16 @@ class MemUpMemoryImpl(MemUpMemory):
         return os.out[:, os.out.shape[1] - data.target.shape[1]:], os.state
 
 
-class MemUpLossImpl(MemUpLoss):
-
-    def __init__(self, use_extra_targets: bool):
-        super().__init__()
-        self.use_extra_targets = use_extra_targets
-
-    def loss(self, data, state, out, target, coef=100):
-        target = target.cuda()
-        out = torch.cat([out] * len(data), 0)
-        target = torch.cat([target] * len(data), 0)
-        pred = predictor(out, state)
-        loss = -pearson_corr_coef(pred, target).mean() * coef
-        loss = loss + nn.PoissonNLLLoss(log_input=False)(pred, target)
-        return loss, pearson_corr_coef(pred, target).mean().item(), nn.PoissonNLLLoss(log_input=False)(pred, target).item()
-
-    def forward(self, data: List[DataTypeWithMemory], info: Info) -> Tensor:
-        out, target = torch.cat([d[1] for d in data], 1), torch.cat([d[0].target for d in data], 1)
-        s0 = torch.cat([d[2] for d in data], 0)
-        assert out.shape[1] == target.shape[1]
-
-        loss = 0
-
-        if out.shape[1] > 0:
-            loss, pearson_corr, poisson_nll = self.loss(data, s0, out, target, coef=10)
-            info["pearson_corr current"] = pearson_corr
-            info["poisson_nll current"] = poisson_nll
-
-        if self.use_extra_targets:
-            assert "context_selected" in info and "context_target" in info
-            context = info["context_selected"].cuda()
-            context_target = info["context_target"]
-            assert context.shape[1] == TOPK and context_target.shape[1] == TOPK
-            loss2, pearson_corr, poisson_nll = self.loss(data, s0, context, context_target)
-            loss = loss + loss2
-            info["pearson_corr selected"] = pearson_corr
-            info["poisson_nll selected"] = poisson_nll
-
-        info["sum loss"] = loss.item()
-
-        return loss
-
-
-class EvalLossImpl(MemUpLoss):
-
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, data: List[DataTypeWithMemory], info: Info) -> Tensor:
-
-        targets = []
-        pred_collection = []
-
-        for d, o, s in data:
-            pred = predictor.forward(o, s)
-            pred_collection.append(pred.cpu())
-            targets.append(d.target)
-
-        predictions = torch.cat(pred_collection, 1)
-        targets = torch.cat(targets, 1)
-        assert predictions.shape[1] == targets.shape[1]
-        errors = pearson_corr_coef(predictions, targets).mean()
-        info["pearson corr coef 1"] = errors.item()
-
-        out_collection = [o for d, o, s in data]
-        _, _, last_state = data[-1]
-        predictions = predictor.forward(torch.cat(out_collection, 1), last_state).cpu()
-
-        assert predictions.shape[1] == targets.shape[1]
-        errors = pearson_corr_coef(predictions, targets).mean()
-        p_err = nn.PoissonNLLLoss(log_input=False)(predictions, targets)
-        info["pearson corr coef 2"] = errors.item()
-        info["poisson errors"] = p_err.item()
-
-        return p_err
-
-
-mem_acc = Accumulator(mem_transformer, decay=0.9)
-pred_acc = Accumulator(predictor, decay=0.9)
+mem_acc = Accumulator(mem_transformer, decay=0.95)
+pred_acc = Accumulator(predictor, decay=0.95)
 
 
 memup_iter_eval = MemUpLossIterator[DataType](
     rollout=2000,
     memory=MemUpMemoryImpl(mem_transformer),
-    loss=EvalLossImpl(),
+    loss=EvalLoss(predictor, [
+        PearsonCorrMetric()
+    ]),
     data_filter=SeqDataFilterImpl(),
     info_update=[
         IncrementStep()
@@ -183,7 +107,10 @@ memup_iter_eval = MemUpLossIterator[DataType](
 memup_iter_with_extra_targets = MemUpLossIterator[DataType](
     rollout=2,
     memory=MemUpMemoryImpl(mem_transformer),
-    loss=MemUpLossImpl(use_extra_targets=True),
+    loss=PredictorLossWithContext(predictor, [
+        LossModule(nn.PoissonNLLLoss(log_input=False), "poisson", 1.0),
+        LossModule(PearsonCorrLoss(), "pearson corr", 100.0),
+    ], lambda data: data.target),
     data_filter=SeqDataFilterImpl(),
     info_update=[
         IncrementStep(),
@@ -243,8 +170,17 @@ def train_one_epoch(memup_iter, train_loader, global_step):
 
 global_step = 0
 
-for i in range(133):
+for i in range(1000):
     print("epoch", i)
-    train_data = EnformerDataset([f"/home/jovyan/enformer/h5/train_{i}.h5"])
+    if i % 133 == 108:
+        continue
+    train_data = EnformerDataset([f"/home/jovyan/enformer/h5/train_{i % 133}.h5"])
     train_loader = DataLoader(train_data, shuffle=True, batch_size=64)
+
     global_step = train_one_epoch(memup_iter_with_extra_targets, train_loader, global_step)
+
+    if i % 133 == 0:
+        torch.save({
+            "mem": mem_transformer.state_dict(),
+            "pred": predictor.state_dict()
+        }, "/home/jovyan/enformer/model.pt")

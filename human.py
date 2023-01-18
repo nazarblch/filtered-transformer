@@ -1,125 +1,223 @@
 import time
-from copy import deepcopy
-
+from collections import namedtuple
+from typing import Tuple, List
 import numpy as np
 import torch
 from gena_lm.modeling_bert import BertForSequenceClassification, BertModel, BertEncoder
-from torch import nn
+from torch import nn, Tensor
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoTokenizer, BertConfig
-import pandas as pd
 from tqdm import tqdm
 
 from datasets.gena import HumanDataset, HumanDataset2
 from filter_model.base import FilterModel, FilteredRecurrentTransformer, NStepFilterObject
 from filter_model.chunk_filter import BertChunkFilter
 from filter_model.seq_filter import DictSeqFilterBidirectional, DictSeqFilter
-from models.transformers import TransformerClassifier, BertClassifier, BertRecurrentTransformer, BertRecurrentLSTM
+from memup.base import MemUpMemory, State, MemUpLoss, Info, MemUpLossIterator
+from memup.data_filters import SlidingWindowFilter
+from memup.loss import PredictorLossStateOnly, LossModule, EvalLossStateOnly
+from memup.preproc import IncrementStep
+from metrics.accuracy import AccuracyMetric
+from models.transformers import TransformerClassifier, BertClassifier, BertRecurrentTransformer, BertRecurrentLSTM, \
+    BertRecurrentTransformerWithTokenizer
 
 torch.cuda.set_device("cuda:0")
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
-
-# filter_model = BertChunkFilter(bert_model, 40, 2)
-
-rec_transformer = FilteredRecurrentTransformer(
-    BertRecurrentLSTM(bert_model, 3, bert_model.config.hidden_size),
-    # NStepFilterObject(6)(filter_model),
-    DictSeqFilter(200, "input_ids"),
-    embedding=None,
-    rollout=2
-).cuda()
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, 300, 4, 3, bert_model.config.hidden_size * 2).cuda()
 head = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
 
-opt = torch.optim.Adam([
-    {"params": rec_transformer.transformer.bert.parameters(), "lr": 4e-6},
-    {"params": head.parameters(), "lr": 2e-5},
-    {"params": rec_transformer.transformer.encoder.parameters(), "lr": 2e-5},
-    {"params": rec_transformer.state_filter.parameters(), "lr": 2e-5},
-    # {"params": filter_model.encoder.parameters(), "lr": 1e-5},
-    # {"params": filter_model.head.parameters(), "lr": 1e-5},
-])
-# scheduler = StepLR(opt, step_size=200, gamma=0.96)
+weights = torch.load("/home/jovyan/PycharmProjects/promoter.pt")
+mem_transformer.load_state_dict(weights["mem"])
+head.load_state_dict(weights["pred"])
 
-data = HumanDataset2(
+opt = torch.optim.Adam([
+    {"params": mem_transformer.bert.parameters(), "lr": 2e-6},
+    {"params": head.parameters(), "lr": 1e-5},
+    {"params": mem_transformer.encoder.parameters(), "lr": 1e-5},
+])
+
+dataset = HumanDataset2(
     [
-        "/home/nazar/PycharmProjects/GENA_LM/data/len_16000/len_16000/fold_1.csv",
-        "/home/nazar/PycharmProjects/GENA_LM/data/len_16000/len_16000/fold_2.csv",
-        "/home/nazar/PycharmProjects/GENA_LM/data/len_16000/len_16000/fold_3.csv",
-        "/home/nazar/PycharmProjects/GENA_LM/data/len_16000/len_16000/fold_4.csv",
-        "/home/nazar/PycharmProjects/GENA_LM/data/len_16000/len_16000/fold_5.csv",
-     ],
-    tokenizer
+        "/home/jovyan/len_16000/fold_1.csv",
+        "/home/jovyan/len_16000/fold_2.csv",
+        "/home/jovyan/len_16000/fold_3.csv",
+        "/home/jovyan/len_16000/fold_4.csv",
+        "/home/jovyan/len_16000/fold_5.csv",
+     ]
 )
 
 print("data")
 
-train_data, test_data = torch.utils.data.random_split(data, [int(len(data) * 0.8), len(data) - int(len(data) * 0.8)])
-
-def custom_collate(data):
-    inputs = tokenizer([d['text'] for d in data], max_length=4000, truncation=True)
-    labels = [d['label'] for d in data]
-    inputs["input_ids"] = pad_sequence([torch.tensor(t) for t in inputs["input_ids"]], batch_first=True)
-    inputs["attention_mask"] = pad_sequence([torch.tensor(t) for t in inputs["attention_mask"]], batch_first=True)
-    labels = torch.tensor(labels)
-    return inputs["input_ids"], inputs["attention_mask"], labels
+train_data, test_data = torch.utils.data.random_split(dataset, [int(len(dataset) * 0.8), len(dataset) - int(len(dataset) * 0.8)])
 
 
-train_loader = DataLoader(train_data, shuffle=True, batch_size=32, collate_fn=custom_collate)
-test_loader = DataLoader(test_data, shuffle=False, batch_size=256, collate_fn=custom_collate)
+train_loader = DataLoader(train_data, shuffle=True, batch_size=32)
+test_loader = DataLoader(test_data, shuffle=False, batch_size=256)
 
-writer = SummaryWriter(f"/home/nazar/pomoika/gena_2000_seq_tr_{time.time()}")
-step = 0
+writer = SummaryWriter(f"/home/jovyan/pomoika/gena_16000_seq_tr_{time.time()}")
+device = torch.device("cuda")
+BS = 1000
+DataType = namedtuple("DataType", ["text", "target"])
+DataTypeWithMemory = Tuple[DataType, Tensor, Tensor]
 
-for epoch_num in range(100):
 
-    rec_transformer.train()
+class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
+
+    def __init__(self):
+        super().__init__(BS, padding=BS // 5)
+
+    def filter_data(self, data: DataType, i1: int, i2: int, i1_pad: int, i2_pad: int) -> DataType:
+        pad_text = [t[i1_pad:i2_pad] for t in data.text]
+
+        return DataType(pad_text, data.target)
+
+
+class MemUpMemoryImpl(MemUpMemory):
+
+    def __init__(self, mem_tr: BertRecurrentTransformerWithTokenizer):
+        super().__init__()
+        self.mem_tr = mem_tr
+
+    def forward(self, data: DataType, state: State) -> Tuple[Tensor, State]:
+        os = self.mem_tr.forward(data.text, state)
+        return None, os.state
+
+
+class MemUpLossImpl(MemUpLoss):
+
+    def __init__(self):
+        super().__init__()
+
+    def loss(self, data, state, target):
+        target = target.cuda()
+        target = torch.cat([target] * len(data), 0)
+        pred = head.forward(state)
+        loss = nn.CrossEntropyLoss()(pred, target)
+        acc = AccuracyMetric()(pred, target)
+        return loss, acc
+
+    def forward(self, data: List[DataTypeWithMemory], info: Info) -> Tensor:
+        target = data[-1][0].target
+        s0 = torch.cat([d[2] for d in data], 0)
+
+        loss, acc = self.loss(data, s0, target)
+        info["loss"] = loss.item()
+        info["acc"] = acc
+
+        return loss
+
+
+class MemUpEval(MemUpLoss):
+
+    def __init__(self):
+        super().__init__()
+
+    def loss(self, data, state, target):
+        target = target.cuda()
+        pred = head.forward(state)
+        loss = nn.CrossEntropyLoss()(pred, target)
+        acc = AccuracyMetric()(pred, target)
+        return loss, acc
+
+    def forward(self, data: List[DataTypeWithMemory], info: Info) -> Tensor:
+        target = data[-1][0].target
+        s0 = data[-1][2]
+        loss, acc = self.loss(data, s0, target)
+        info["loss"] = loss.item()
+        info["acc"] = acc
+
+        return loss
+
+
+memup_iter = MemUpLossIterator[DataType](
+    rollout=2,
+    memory=MemUpMemoryImpl(mem_transformer),
+    loss=MemUpLossImpl(),
+    data_filter=SeqDataFilterImpl(),
+    info_update=[
+        IncrementStep()
+    ]
+)
+
+memup_iter_eval = MemUpLossIterator[DataType](
+    rollout=2000,
+    memory=MemUpMemoryImpl(mem_transformer),
+    loss=MemUpEval(),
+    data_filter=SeqDataFilterImpl(),
+    info_update=[
+        IncrementStep()
+    ]
+)
+
+
+@torch.no_grad()
+def evaluate(global_step):
+    print("evaluate")
+    mem_transformer.eval()
+    head.eval()
+
+    n = 0
+    acc = []
+    for data2 in test_loader:
+        state2 = torch.zeros(data2["label"].shape[0], 50, bert_model.config.hidden_size, device=device)
+        data2 = DataType(data2["text"], data2["label"])
+        info = {}
+        _, _, info, _ = memup_iter_eval.forward(data2, state2, info)
+        writer.add_scalar("eval/loss", info["loss"], global_step + n)
+        writer.add_scalar("eval/acc", info["acc"], global_step + n)
+        acc.append(info["acc"])
+        n += 1
+        print(n)
+        if n > 30:
+            break
+
+    writer.add_scalar("eval/acc_mean", sum(acc) / len(acc), global_step + n)
+
+    mem_transformer.train()
     head.train()
 
-    for X, m, y in tqdm(train_loader):
+def train_one_epoch(memup_iter, train_loader, global_step):
 
-        X, m, y = X.cuda(), m.cuda(), y.cuda()
-        # X = rec_transformer.transformer.bert.embeddings(X).detach()
-        B = X.shape[0]
+    for data1 in train_loader:
+        print()
 
-        s0 = torch.zeros(X.shape[0], 30, bert_model.config.hidden_size, device=X.device)
-        gen = rec_transformer.forward({"input_ids": X, "attention_mask": m}, s0)
+        if global_step % 1000 == 0 and global_step > 0:
+            evaluate(global_step)
+            torch.save({
+                "mem": mem_transformer.state_dict(),
+                "pred": head.state_dict()
+            }, "/home/jovyan/PycharmProjects/promoter.pt")
 
-        for s in gen:
-            pred_1 = head(s)
+        state = torch.zeros(data1["label"].shape[0], 50, bert_model.config.hidden_size, device=device)
+        data1 = DataType(data1["text"], data1["label"])
+        done = False
+        info = {}
 
-            batch_loss = nn.CrossEntropyLoss()(pred_1, y.repeat(pred_1.shape[0] // B))
+        while not done:
+            global_step += 1
+
             opt.zero_grad()
-            batch_loss.backward()
+            loss, state, info, done = memup_iter.forward(data1, state, info)
+
+            loss.backward()
             opt.step()
 
-        # scheduler.step()
+        print(global_step, info["loss"], info["acc"])
+        writer.add_scalar("loss", info["loss"], global_step)
+        writer.add_scalar("acc", info["acc"], global_step)
 
-        acc = (pred_1[pred_1.shape[0] - B:].argmax(dim=1) == y).sum().item() / X.shape[0]
-        writer.add_scalar("train acc", acc, step)
-        writer.add_scalar("train loss", batch_loss.item(), step)
+    return global_step
 
-        step += 1
 
-    with torch.no_grad():
+global_step = 0
 
-        rec_transformer.eval()
-        head.eval()
+for i in range(1000):
+    print("epoch", i)
+    global_step = train_one_epoch(memup_iter, train_loader, global_step)
 
-        test_acc = 0
 
-        for X, m, y in test_loader:
-            X, m, y = X.cuda(), m.cuda(), y.cuda()
-            # X = rec_transformer.transformer.bert.embeddings(X)
-            B = X.shape[0]
-            s0 = torch.zeros(X.shape[0], 30, bert_model.config.hidden_size, device=X.device)
-            *_, s = rec_transformer.forward({"input_ids": X, "attention_mask": m}, s0)
-            pred_1 = head(s)
-            acc = (pred_1[pred_1.shape[0] - B:].argmax(dim=1) == y).sum().item()
-            test_acc += acc
-
-        writer.add_scalar("test acc", test_acc / len(test_data), epoch_num)
