@@ -1,5 +1,4 @@
 import math
-from abc import ABC
 from copy import deepcopy
 from functools import reduce
 
@@ -11,7 +10,6 @@ from torch.nn import TransformerEncoderLayer, TransformerEncoder
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BertModel, BertConfig, PreTrainedTokenizer
 from typing import Dict, List
-# from chrono_initialization import init as chrono_init
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
 from models.pos_encoding import PositionalEncoding2
@@ -21,6 +19,13 @@ class RecurrentOutput:
     def __init__(self, out: Tensor, state: Tensor):
         self.state = state
         self.out = out
+
+
+class RecurrentOutputWithContext(RecurrentOutput):
+    def __init__(self, out: Tensor, state: Tensor, context: Tensor):
+        self.state = state
+        self.out = out
+        self.context = context
 
 
 class RecurrentOutputSeq:
@@ -41,10 +46,13 @@ class RecurrentOutputSeq:
         return reduce(lambda m1, m2: m1 + m2, self.masks)
 
 
-class RecurrentTransformer(nn.Module, ABC):
+class RecurrentTransformer(nn.Module):
+
+    def __init__(self):
+        super().__init__()
 
     def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
-       pass
+        pass
 
 
 class BertRecurrentTransformer(RecurrentTransformer):
@@ -68,7 +76,7 @@ class BertRecurrentTransformer(RecurrentTransformer):
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
         return h['last_hidden_state']
 
-    def forward(self, x: Dict[str, Tensor], state: Tensor) -> RecurrentOutput:
+    def forward(self, x: Dict[str, Tensor], state: Tensor) -> RecurrentOutputWithContext:
         h = self.extract_hidden(self.bert(input_ids=x["input_ids"], attention_mask=x['attention_mask'], output_hidden_states=False))
         assert state.shape[-1] == h.shape[-1]
         assert state.shape[0] == h.shape[0]
@@ -77,7 +85,7 @@ class BertRecurrentTransformer(RecurrentTransformer):
         new_state = shs[:, h.shape[1]:]
         out = shs[:, : h.shape[1]]
 
-        return RecurrentOutput(out, new_state)
+        return RecurrentOutputWithContext(out, new_state, h)
 
 
 class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):

@@ -20,11 +20,6 @@ class EnformerDataset(Dataset):
                     self.texts.append(f[key]["seq"][()].decode('UTF-8'))
 
         self.targets = np.stack(self.targets)
-        # sd = np.std(self.targets, axis=0) + 1e-3
-        # m = np.mean(self.targets, axis=0)
-        # for i in range(self.targets.shape[0]):
-        #     self.targets[i] = (self.targets[i] - m) / sd
-        # print(np.max(self.targets))
         self.coords = np.stack(self.coords)
 
     def __len__(self):
