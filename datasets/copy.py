@@ -20,7 +20,7 @@ class CopyTask(Dataset):
         middle = np.zeros(self.middle_size, dtype=np.int64) + 8
         tail = np.zeros(self.head_size, dtype=np.int64) + 9
 
-        x = np.concatenate([head, middle, np.arange(10)])
+        x = np.concatenate([head, middle, tail])
         y = np.concatenate([head * 0 + 8, middle, head])
 
         return torch.from_numpy(x), torch.from_numpy(y)

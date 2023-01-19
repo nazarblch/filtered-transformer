@@ -130,6 +130,34 @@ class TargetsSampler(InfoUpdate[SD]):
         return info
 
 
+class TailTargets(InfoUpdate[SD]):
+    def __init__(self, count: int, get_target: Callable[[SD], Tensor],
+                 context_key="context",
+                 selected_context_key="context_selected", selected_target_key="context_target"):
+        self.get_target = get_target
+        self.context_key = context_key
+        self.count = count
+        self.selected_context_key = selected_context_key
+        self.selected_target_key = selected_target_key
+
+    def sample_data(self, context: Tensor, target: Tensor):
+        count = self.count
+        T = context.shape[1]
+        assert target.shape[1] == T
+
+        return context[:, T - count:], target[:, T - count:]
+
+    @torch.no_grad()
+    def forward(self, data: SD, state: State, info: Info, *args) -> Info:
+
+        info[self.selected_context_key], info[self.selected_target_key] = self.sample_data(
+            torch.cat(info[self.context_key], dim=1),
+            self.get_target(data)
+        )
+
+        return info
+
+
 
 
 

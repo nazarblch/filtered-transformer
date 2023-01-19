@@ -63,19 +63,36 @@ class TorchRecurrentTransformer(RecurrentTransformer):
                  dim_feedforward: int = 2048,
                  dropout: float = 0.1):
         super().__init__()
-        self.pos_encoder = PositionalEncoding2(d_model)
 
         self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout),
+            nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True),
             num_layers
         )
 
     def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
-        x = self.pos_encoder(x) * math.sqrt(x.shape[1])
         xs = torch.cat([x, state], dim=1)
-        res = self.encoder(xs.transpose(0, 1)).transpose(0, 1)
+        res = self.encoder(xs)
 
         return RecurrentOutput(res[:, :x.shape[1]], res[:, x.shape[1]:])
+
+
+class TorchRecurrentNN(RecurrentTransformer):
+
+    def __init__(self,
+                 d_model: int = 256,
+                 num_layers: int = 2,
+                 dropout: float = 0.1):
+        super().__init__()
+
+        self.lstm = nn.LSTM(d_model, d_model, num_layers, dropout=dropout, batch_first=True)
+
+    def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
+        h = state[:, :2].transpose(0, 1).contiguous()
+        c = state[:, 2:4].transpose(0, 1).contiguous()
+        out, (h, c) = self.lstm.forward(x, (h, c))
+        s = torch.cat([h, c]).transpose(0, 1)
+
+        return RecurrentOutput(out, s)
 
 
 class BertRecurrentTransformer(RecurrentTransformer):

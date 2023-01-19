@@ -56,3 +56,16 @@ class LinearEmbedWithPos(nn.Module):
     def forward(self, x: Tensor):
         out = self.embed(x)
         return self.pos_encoder(out) * math.sqrt(self.multiplier)
+
+
+class EmbedWithPos(nn.Module):
+
+    def __init__(self, n: int, d_model: int, multiplier: float, max_len: int = 1000):
+        super().__init__()
+        self.embed = nn.Embedding(n, d_model)
+        self.pos_encoder = PositionalEncoding2(d_model, max_len=max_len)
+        self.multiplier = multiplier
+
+    def forward(self, x: Tensor):
+        out = self.embed(x)
+        return self.pos_encoder(out) * math.sqrt(self.multiplier)

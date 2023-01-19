@@ -18,9 +18,9 @@ from memup.loss import PredictorLossWithContext, LossModule, EvalLoss
 from memup.preproc import ContextPreprocessor, NStepUpdate, IncrementStep, ErrorPreprocessor, TargetsSampler
 from metrics.pearson import PearsonCorrLoss, PearsonCorrMetric
 from models.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
-    BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer
+    BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer, TorchRecurrentNN
 
-mem_transformer = TorchRecurrentTransformer(256, 4, 3, 512).cuda()
+mem_transformer = TorchRecurrentNN(256).cuda()
 embed = nn.Embedding(20, 256).cuda()
 
 
@@ -28,7 +28,7 @@ class Predictor(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.encoder = TorchRecurrentTransformer(256, 4, 2, 512).cuda()
+        self.encoder = TorchRecurrentTransformer(256, 4, 2, 512)
         self.head = nn.Sequential(
             nn.Linear(256, 256),
             nn.ReLU(),
@@ -52,8 +52,7 @@ opt = torch.optim.Adam([
 ])
 
 
-writer = SummaryWriter(f"/home/jovyan/pomoika/copy_{time.time()}")
-
+# writer = SummaryWriter(f"/home/slavic/pomoika/copy_{time.time()}")
 
 device = torch.device("cuda")
 BS = 30
