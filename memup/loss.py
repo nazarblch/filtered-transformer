@@ -135,10 +135,11 @@ class PredictorLossWithContext(PredictorLoss):
 
 class EvalLoss(MemUpLoss):
 
-    def __init__(self, predictor: nn.Module, metrics: List[Metric]):
+    def __init__(self, predictor: nn.Module, metrics: List[Metric], get_target: Callable[[SD], Tensor]):
         super().__init__()
         self.predictor = predictor
         self.metrics = metrics
+        self.get_target = get_target
 
     @torch.no_grad()
     def forward(self, data: List[SDWithMemory], info: Info) -> None:
@@ -149,7 +150,7 @@ class EvalLoss(MemUpLoss):
         for d, o, s in data:
             pred = self.predictor.forward(o, s)
             pred_collection.append(pred.cpu())
-            targets.append(d.target)
+            targets.append(self.get_target(d))
 
         predictions = torch.cat(pred_collection, 1)
         targets = torch.cat(targets, 1)

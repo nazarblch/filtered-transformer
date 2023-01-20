@@ -1,6 +1,7 @@
 from collections import namedtuple
 from typing import Iterator, Tuple, List, Callable, Optional
 import torch
+from sklearn.metrics import accuracy_score
 from torch.utils.tensorboard import SummaryWriter
 import time
 from gena_lm.modeling_bert import BertModel, BertForSequenceClassification
@@ -17,24 +18,30 @@ from memup.data_filters import SlidingWindowFilter
 from memup.loss import PredictorLossWithContext, LossModule, EvalLoss
 from memup.preproc import ContextPreprocessor, NStepUpdate, IncrementStep, ErrorPreprocessor, TargetsSampler, \
     TailTargets
+from metrics.accuracy import AccuracyMetric
+from metrics.base import Metric
 from metrics.pearson import PearsonCorrLoss, PearsonCorrMetric
 from models.pos_encoding import EmbedWithPos
 from models.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
     BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer, TorchRecurrentNN
 
-mem_transformer = TorchRecurrentTransformer(256, 4, 3, 512, dropout=0.1).cuda()
+mem_transformer = TorchRecurrentNN(256, dropout=0.1).cuda()
 embed = EmbedWithPos(10, 256, 10).cuda()
+
+
+writer = SummaryWriter(f"/home/jovyan/pomoika/copy_500_{time.time()}")
 
 
 class Predictor(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.encoder = TorchRecurrentTransformer(256, 4, 2, 512, dropout=0)
+        self.encoder = TorchRecurrentTransformer(256, 4, 2, 512, dropout=0.1)
         self.head = nn.Sequential(
             nn.Linear(256, 256),
             nn.ReLU(),
             nn.Linear(256, 256),
+            nn.Dropout(0.1),
             nn.ReLU(),
             nn.Linear(256, 10)
         )
@@ -49,9 +56,9 @@ predictor = Predictor().cuda()
 train_data = CopyTask(10000, 10, 500)
 train_loader = DataLoader(train_data, shuffle=True, batch_size=128)
 opt = torch.optim.Adam([
-    {"params": mem_transformer.parameters(), "lr": 4e-5},
-    {"params": embed.parameters(), "lr": 4e-5},
-    {"params": predictor.parameters(), "lr": 4e-5}
+    {"params": mem_transformer.parameters(), "lr": 2e-5},
+    {"params": embed.parameters(), "lr": 2e-5},
+    {"params": predictor.parameters(), "lr": 2e-5}
 ])
 
 mem_acc = Accumulator(mem_transformer, decay=0.95)
@@ -59,7 +66,7 @@ pred_acc = Accumulator(predictor, decay=0.95)
 embed_acc = Accumulator(embed, decay=0.95)
 
 DataType = namedtuple("DataType", ["x", "y", "length"])
-BS = 20
+BS = 10
 
 
 class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
@@ -107,6 +114,17 @@ class MemUpMemoryImpl(MemUpMemory):
 #
 #     return torch.cat(context, 1)
 
+class TailAccuracyMetric(Metric):
+
+    def __init__(self):
+        super().__init__("TailAccuracy")
+
+    @torch.no_grad()
+    def __call__(self, logits: Tensor, labels: Tensor) -> float:
+        T = logits.shape[1]
+        logits, labels = logits[:, T - 10:], labels[:, T - 10:]
+        return accuracy_score(logits.argmax(-1).reshape(-1).cpu().numpy(), labels.reshape(-1).cpu().numpy())
+
 
 
 memup_iter = MemUpLossIterator[DataType](
@@ -114,6 +132,7 @@ memup_iter = MemUpLossIterator[DataType](
     memory=MemUpMemoryImpl(embed, mem_transformer),
     loss=PredictorLossWithContext(predictor, [
         LossModule(nn.CrossEntropyLoss(), "CE", 1.0),
+        LossModule(AccuracyMetric(), "TAcc", 0.0)
     ], lambda data: data.y),
     data_filter=SeqDataFilterImpl(),
     info_update=[
@@ -124,20 +143,46 @@ memup_iter = MemUpLossIterator[DataType](
 )
 
 
+memup_iter_eval = MemUpLossIterator[DataType](
+    rollout=200,
+    memory=MemUpMemoryImpl(embed, mem_transformer),
+    loss=EvalLoss(predictor, [TailAccuracyMetric()], lambda data: data.y),
+    data_filter=SeqDataFilterImpl(),
+    info_update=[
+        IncrementStep()
+    ]
+)
+
+
+test_data = CopyTask(1000, 10, 500)
+test_loader = DataLoader(test_data, shuffle=False, batch_size=250)
+
+
+@torch.no_grad()
+def eval(i):
+
+    print("evaluate")
+
+    for x, y in test_loader:
+        state2 = torch.zeros(x.shape[0], 4, 256).cuda()
+        info = {}
+        _, _, info, _ = memup_iter_eval.forward(DataType(x, y, x.shape[1]), state2, info)
+
+        print(info["metrics"])
+        for name, val in info["metrics"].items():
+            writer.add_scalar(f"eval/{name}", val, i)
+
 
 for i in range(1000):
     print("epoch", i)
+    eval(i)
+
     for x, y in train_loader:
         print()
 
-        state = torch.zeros(x.shape[0], 10, 256).cuda()
+        state = torch.zeros(x.shape[0], 4, 256).cuda()
         T = x.shape[1]
         data = DataType(x, y, T)
-
-        # with torch.no_grad():
-        #     context = roll(data)
-        #     c_tail = context[:, T - 10:].cuda()
-        #     y_tail = y[:, T - 10:].cuda()
 
         done = False
         info = {}
@@ -151,7 +196,9 @@ for i in range(1000):
             loss.backward()
             opt.step()
 
-        print(info['losses'])
+    print(info['losses'])
+    for name, val in info["losses"].items():
+        writer.add_scalar(f"train/{name}", val, i)
 
         mem_acc.accumulate()
         pred_acc.accumulate()
