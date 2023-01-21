@@ -4,6 +4,7 @@ from typing import List, Callable, Optional
 import torch
 from torch import nn, Tensor
 from memup.base import MemUpLoss, SDWithMemory, Info, SD
+from memup.preproc import select_by_index
 from metrics.base import Metric
 
 LossModule = namedtuple("LossModule", ["module", "name", "coefficient"])
@@ -45,16 +46,24 @@ class PredictorLoss(MemUpLoss):
         s0 = torch.cat([d[2] for d in data], 0)
         assert out.shape[1] == target.shape[1]
 
+        info["losses"] = {}
+        count = sum([int(d[1].shape[1] > 0) for d in data])
         loss = None
 
-        info["losses"] = {}
+        if count > 1:
+            sample_size = out.shape[1] // count
+            index = torch.multinomial(
+                torch.ones(out.shape[0], out.shape[1], device=out.device) / out.shape[1],
+                sample_size,
+                replacement=False)
+            out, target = select_by_index(index, out), select_by_index(index.cpu(), target)
+            assert out.shape[1] == sample_size
 
-        if out.shape[1] > 0:
+        if count > 0:
             loss, losses = self.loss(s0, out, target)
+            info["losses"]["sum loss"] = loss.item()
             for name, l in losses.items():
                 info["losses"][name] = l
-
-            info["losses"]["sum loss"] = loss.item()
 
         return loss
 

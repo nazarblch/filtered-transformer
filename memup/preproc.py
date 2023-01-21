@@ -4,6 +4,19 @@ import torch
 from torch import nn, Tensor
 
 
+def select_by_index(index: Tensor, data: Tensor):
+    count = index.shape[1]
+    B = data.shape[0]
+    if len(data.shape) > 2:
+        index = index.reshape(*index.shape, *[1] * (len(data.shape)-2))
+        index = index.expand(-1, -1, *data.shape[2:])
+        selected_data = torch.gather(data, 1, index).reshape(B, count, *data.shape[2:])
+    else:
+        selected_data = torch.gather(data, 1, index).reshape(B, count)
+
+    return selected_data
+
+
 class ContextPreprocessor(InfoUpdate[SD]):
     def __init__(self, mem_transformer: MemUpMemory[SD], seq_filter: SeqDataFilter[SD], key="context", last_state_key="last_state"):
         self.mem_transformer = mem_transformer
@@ -35,7 +48,7 @@ class ContextPreprocessor(InfoUpdate[SD]):
 class NStepUpdate(InfoUpdate[SD]):
 
     def forward(self, data: SD, state: State, info: Info, *args) -> Info:
-        if (info[self.step_key] + self.offset) % self.n == 0:
+        if info[self.step_key] % self.n == self.offset:
             info = self.update.forward(data, state, info)
         return info
 
@@ -103,20 +116,12 @@ class TargetsSampler(InfoUpdate[SD]):
         count = self.count
         assert torch.all(errors >= 0)
         probs = errors / errors.sum(dim=1, keepdim=True)
-        sample = torch.multinomial(probs, count, replacement=False)
-        index = sample[:, :, None]
-        B = context.shape[0]
+        index = torch.multinomial(probs, count, replacement=False)
 
         # selected_errors = torch.gather(errors, 1, index[:, :, 0]).reshape(B, count)
         # print("errors:", errors.mean(), "selected_errors:", selected_errors.mean().item())
 
-        if len(target.shape) > 2:
-            selected_target = torch.gather(target, 1, index.expand(-1, -1, target.shape[-1])).reshape(B, count, target.shape[-1])
-        else:
-            selected_target = torch.gather(target, 1, index[:, :, 0]).reshape(B, count)
-
-        return torch.gather(context, 1, index.expand(-1, -1, context.shape[-1])).reshape(B, count, context.shape[-1]), \
-               selected_target
+        return select_by_index(index, context), select_by_index(index, target)
 
     @torch.no_grad()
     def forward(self, data: SD, state: State, info: Info, *args) -> Info:
