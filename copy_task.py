@@ -154,7 +154,7 @@ def train_one_epoch(memup_iter, train_loader, global_step):
             assert loss is not None
             loss.backward()
             opt.step()
-            print(loss.item())
+        print(info["losses"])
 
             # if global_step % 10 == 0:
             #     if "pearson_corr current" in info:

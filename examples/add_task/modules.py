@@ -3,14 +3,11 @@ from typing import Iterator, Tuple, List, Callable, Optional
 import torch
 from sklearn.metrics import accuracy_score
 from torch import Tensor, nn
-from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, State, Info, Done, InfoUpdate, \
-    DataCollector, SD, MemoryOut, CT, DataCollectorAppend
+from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, MemUpLossIterator, State, Info, Done, InfoUpdate
 from memup.data_filters import SlidingWindowFilter
-from memup.loss import TOS, PT
 from metrics.base import Metric
-from models.pos_encoding import EmbedWithPos
+from models.pos_encoding import EmbedWithPos, LinearEmbedWithPos
 from models.transformers import TorchRecurrentTransformer, RecurrentTransformer
-
 
 DataType = namedtuple("DataType", ["x", "y", "length"])
 
@@ -26,7 +23,7 @@ class Predictor(nn.Module):
             nn.Linear(256, 256),
             nn.Dropout(0.1),
             nn.ReLU(),
-            nn.Linear(256, 10)
+            nn.Linear(256, 1)
         )
 
     def forward(self, x: Tensor, state: State):
@@ -36,7 +33,7 @@ class Predictor(nn.Module):
 
 class MemUpMemoryImpl(MemUpMemory):
 
-    def __init__(self, embed: EmbedWithPos, mem_tr: RecurrentTransformer):
+    def __init__(self, embed: LinearEmbedWithPos, mem_tr: RecurrentTransformer):
         super().__init__()
         self.mem_tr = mem_tr
         self.embed = embed
@@ -72,31 +69,3 @@ class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
         y = data.y[:, i1: i2]
 
         return DataType(pad_x, y, i2_pad - i1_pad)
-
-
-class DataCollectorTrain(DataCollectorAppend[DataType, TOS]):
-    def apply(self, data: DataType, out: MemoryOut, state: State) -> TOS:
-        return TOS(data.y, out, state)
-
-
-class DataCollectorEval(DataCollectorAppend[DataType, PT]):
-
-    def __init__(self, predictor: nn.Module):
-        super().__init__()
-        self.predictor = predictor
-
-    def apply(self, data: DataType, out: MemoryOut, state: State) -> PT:
-        pred = self.predictor(out, state)
-        return PT(pred, data.y)
-
-
-class DataCollectorEvalWithState(DataCollectorAppend[DataType, PT]):
-
-    def __init__(self, predictor: nn.Module, state: Tensor):
-        super().__init__()
-        self.predictor = predictor
-        self.state = state
-
-    def apply(self, data: DataType, out: MemoryOut, state: State) -> PT:
-        pred = self.predictor(out, self.state)
-        return PT(pred, data.y)

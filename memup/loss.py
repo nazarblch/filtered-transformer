@@ -3,24 +3,25 @@ from typing import List, Callable, Optional
 
 import torch
 from torch import nn, Tensor
-from memup.base import MemUpLoss, SDWithMemory, Info, SD
+from memup.base import MemUpLoss, SDWithMemory, Info, SD, DataCollector, DataCollectorAppend, DataCollectorReplace
 from memup.preproc import select_by_index
 from metrics.base import Metric
 
 LossModule = namedtuple("LossModule", ["module", "name", "coefficient"])
+TOS = namedtuple("TOS", ["target", "out", "state"])
+TS = namedtuple("TS", ["target", "state"])
+PT = namedtuple("PT", ["prediction", "target"])
 
 
 class PredictorLoss(MemUpLoss):
 
     def __init__(self,
                  predictor: nn.Module,
-                 loss_modules: List[LossModule],
-                 get_target: Callable[[SD], Tensor]):
+                 loss_modules: List[LossModule]):
 
         super().__init__()
         self.predictor = predictor
         self.loss_modules = loss_modules
-        self.get_target = get_target
 
     def loss(self, state, out, target):
         target = target.cuda()
@@ -41,13 +42,14 @@ class PredictorLoss(MemUpLoss):
 
         return sum_loss, losses
 
-    def forward(self, data: List[SDWithMemory], info: Info) -> Optional[Tensor]:
-        out, target = torch.cat([d[1] for d in data], 1), torch.cat([self.get_target(d[0]) for d in data], 1)
-        s0 = torch.cat([d[2] for d in data], 0)
+    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info) -> Optional[Tensor]:
+        target_seq, out_seq, state_seq = collector.result()
+        out, target = torch.cat(out_seq, 1), torch.cat(target_seq, 1)
+        s0 = torch.cat(state_seq, 0)
         assert out.shape[1] == target.shape[1]
 
         info["losses"] = {}
-        count = sum([int(d[1].shape[1] > 0) for d in data])
+        count = sum([int(o.shape[1] > 0) for o in out_seq])
         loss = None
 
         if count > 1:
@@ -72,13 +74,11 @@ class PredictorLossStateOnly(MemUpLoss):
 
     def __init__(self,
                  predictor: nn.Module,
-                 loss_modules: List[LossModule],
-                 get_target: Callable[[SD], Tensor]):
+                 loss_modules: List[LossModule]):
 
         super().__init__()
         self.predictor = predictor
         self.loss_modules = loss_modules
-        self.get_target = get_target
 
     def loss(self, state, target):
         target = target.cuda()
@@ -96,9 +96,10 @@ class PredictorLossStateOnly(MemUpLoss):
 
         return sum_loss, losses
 
-    def forward(self, data: List[SDWithMemory], info: Info) -> Optional[Tensor]:
-        target = self.get_target(data[-1][0])
-        s0 = torch.cat([d[2] for d in data], 0)
+    def forward(self, collector: DataCollectorAppend[SD, TS], info: Info) -> Optional[Tensor]:
+        target_seq, state_seq = collector.result()
+        target = target_seq[-1]
+        s0 = torch.cat(state_seq, 0)
 
         loss, losses = self.loss(s0, target)
         info["losses"] = {}
@@ -115,17 +116,17 @@ class PredictorLossWithContext(PredictorLoss):
     def __init__(self,
                  predictor: nn.Module,
                  loss_modules: List[LossModule],
-                 get_target: Callable[[SD], Tensor],
                  context_selected_key="context_selected",
                  context_target_key="context_target"):
 
-        super().__init__(predictor, loss_modules, get_target)
+        super().__init__(predictor, loss_modules)
         self.context_selected_key = context_selected_key
         self.context_target_key = context_target_key
 
-    def forward(self, data: List[SDWithMemory], info: Info) -> Tensor:
-        loss1 = super().forward(data, info)
-        s0 = torch.cat([d[2] for d in data], 0)
+    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info) -> Tensor:
+        loss1 = super().forward(collector, info)
+        _, _, state_seq = collector.result()
+        s0 = torch.cat(state_seq, 0)
 
         assert self.context_selected_key in info and self.context_target_key in info
         context = info[self.context_selected_key].cuda()
@@ -144,41 +145,23 @@ class PredictorLossWithContext(PredictorLoss):
 
 class EvalLoss(MemUpLoss):
 
-    def __init__(self, predictor: nn.Module, metrics: List[Metric], get_target: Callable[[SD], Tensor]):
+    def __init__(self, metrics: List[Metric]):
         super().__init__()
-        self.predictor = predictor
         self.metrics = metrics
-        self.get_target = get_target
 
     @torch.no_grad()
-    def forward(self, data: List[SDWithMemory], info: Info) -> None:
+    def forward(self, collector: DataCollectorAppend[SD, PT], info: Info) -> None:
+        pred_seq, target_seq = collector.result()
+        targets = torch.cat(target_seq, 1)
+        predictions = torch.cat(pred_seq, 1)
 
-        targets = []
-        pred_collection = []
-
-        for d, o, s in data:
-            pred = self.predictor.forward(o, s)
-            pred_collection.append(pred.cpu())
-            targets.append(self.get_target(d))
-
-        predictions = torch.cat(pred_collection, 1)
-        targets = torch.cat(targets, 1)
         assert predictions.shape[1] == targets.shape[1]
 
         info["metrics"] = {}
 
         for m in self.metrics:
             val = m(predictions, targets)
-            info["metrics"][f"{m.name} tmp"] = val
-
-        out_collection = [o for d, o, s in data]
-        _, _, last_state = data[-1]
-        predictions = self.predictor.forward(torch.cat(out_collection, 1), last_state).cpu()
-
-        assert predictions.shape[1] == targets.shape[1]
-        for m in self.metrics:
-            val = m(predictions, targets)
-            info["metrics"][f"{m.name} last state"] = val
+            info["metrics"][m.name] = val
 
 
 class EvalLossStateOnly(MemUpLoss):
@@ -189,10 +172,10 @@ class EvalLossStateOnly(MemUpLoss):
         self.metrics = metrics
 
     @torch.no_grad()
-    def forward(self, data: List[SDWithMemory], info: Info) -> None:
-
-        targets = data[-1][0].target
-        s0 = data[-1][2]
+    def forward(self, collector: DataCollectorReplace[SD, TS], info: Info) -> None:
+        target_seq, state_seq = collector.result()
+        targets = target_seq[-1]
+        s0 = state_seq[-1]
         predictions = self.predictor(s0).cpu()
         info["metrics"] = {}
 

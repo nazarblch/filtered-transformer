@@ -1,10 +1,11 @@
 from abc import abstractmethod, ABC
 from collections import namedtuple
-from typing import TypeVar, Tuple, Dict, Generic, Callable, Iterator, List, Optional, Any
+from typing import TypeVar, Tuple, Dict, Generic, Callable, Iterator, List, Optional, Any, Type, OrderedDict, NamedTuple
 import torch
 from torch import nn, Tensor
 
 SD = TypeVar("SD", Dict, Tuple, Tensor)
+CT = TypeVar("CT", Dict, Tuple, Tensor)
 State = Tensor
 Info = Dict[str, Any]
 MemoryOut = Tensor
@@ -32,29 +33,75 @@ class MemUpMemory(nn.Module, ABC, Generic[SD]):
         pass
 
 
-class MemUpLoss(nn.Module, ABC, Generic[SD]):
+class DataCollector(Generic[SD, CT], ABC):
+
+    def __init__(self):
+        self.collection: List[CT] = []
+
     @abstractmethod
-    def forward(self, data: List[SDWithMemory], info: Info) -> Loss:
+    def append(self, data: SD, out: MemoryOut, state: State) -> None:
+        pass
+
+    def result(self):
+        assert len(self.collection) > 0
+        if isinstance(self.collection[0], tuple):
+            return tuple(list(zip(*self.collection)))
+        if isinstance(self.collection[0], list):
+            return list(zip(*self.collection))
+        if isinstance(self.collection[0], dict):
+            res = {k: [] for k in self.collection[0].keys()}
+            for d in self.collection:
+                for k, v in d.items():
+                    res[k].append(v)
+            return res
+        if isinstance(self.collection[0], NamedTuple):
+            print("named tuple")
+            res = self.collection[0].__class__(*[[]] * len(self.collection[0]._fields))
+            for d in self.collection:
+                for k, v in d.items():
+                    res[k].append(v)
+            return res
+
+        return self.collection
+
+    @abstractmethod
+    def apply(self, data: SD, out: MemoryOut, state: State) -> CT:
         pass
 
 
-class MemUpLossIterator(Generic[SD]):
+class DataCollectorAppend(DataCollector[SD, CT], ABC):
+    def append(self, data: SD, out: MemoryOut, state: State) -> None:
+        self.collection.append(self.apply(data, out, state))
+
+
+class DataCollectorReplace(DataCollector[SD, CT], ABC):
+    def append(self, data: SD, out: MemoryOut, state: State) -> None:
+        if len(self.collection) == 0:
+            self.collection.append(self.apply(data, out, state))
+        else:
+            self.collection[0] = self.apply(data, out, state)
+
+
+class MemUpLoss(nn.Module, ABC, Generic[SD, CT]):
+    @abstractmethod
+    def forward(self, collector: DataCollector[SD, CT], info: Info) -> Loss:
+        pass
+
+
+class MemoryRollout(Generic[SD]):
     def __init__(self,
-                 rollout: int,
+                 steps: int,
                  memory: MemUpMemory[SD],
-                 loss: MemUpLoss[SD],
                  data_filter: SeqDataFilter[SD],
                  info_update: List[InfoUpdate]):
 
         self.memory = memory
-        self.loss = loss
         self.data_filter = data_filter
-        self.rollout = rollout
+        self.rollout = steps
         self.info_update = info_update
 
-    def forward(self, data: SD, state: State, info: Info) -> Tuple[Optional[Loss], State, Info, Done]:
+    def forward(self, data: SD, state: State, info: Info, collector: DataCollector[SD, CT]) -> Tuple[DataCollector[SD, CT], State, Info, Done]:
 
-        data_collection = []
         done = False
 
         for step in range(self.rollout):
@@ -65,14 +112,29 @@ class MemUpLossIterator(Generic[SD]):
 
             filtered_data, done = self.data_filter(data, state, info)
             out, state = self.memory.forward(filtered_data, state)
-            data_collection.append((filtered_data, out, state))
+            collector.append(filtered_data, out, state)
 
             if done:
                 break
 
-        loss = self.loss(data_collection, info)
+        state = state.detach()
+        return collector, state, info, done
+
+
+class MemoryRolloutWithLoss(Generic[SD, CT]):
+    def __init__(self,
+                 steps: int,
+                 memory: MemUpMemory[SD],
+                 loss: MemUpLoss[SD, CT],
+                 data_filter: SeqDataFilter[SD],
+                 info_update: List[InfoUpdate]):
+        self.mem_roll = MemoryRollout[SD](steps, memory, data_filter, info_update)
+        self.loss = loss
+
+    def forward(self, data: SD, state: State, info: Info, collector: DataCollector[SD, CT]) -> Tuple[Optional[Loss], State, Info, Done]:
+        collector, state, info, done = self.mem_roll.forward(data, state, info, collector)
+        loss = self.loss(collector, info)
         if loss is None or torch.isnan(loss):
             loss = None
-
-        state = state.detach()
         return loss, state, info, done
+

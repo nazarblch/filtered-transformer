@@ -87,15 +87,20 @@ class ErrorPreprocessor(InfoUpdate[SD]):
     def forward(self, data: SD, state: State, info: Info, *args) -> Info:
         print("compute errors")
         state = info[self.last_state_key].cuda()
-        out_collection = []
+        predictions = []
         for out in info[self.key]:
             if out.shape[1] > 0:
-                out_collection.append(out.cuda())
+                pred = self.predictor.forward(out.cuda(), state).cpu()
+                predictions.append(pred)
 
-        predictions = self.predictor.forward(torch.cat(out_collection, 1), state).cpu()
+        predictions = torch.cat(predictions, 1)
         target = self.get_target(data)
         assert predictions.shape[1] == target.shape[1]
-        errors = self.metric(predictions.view(-1, 10), target.view(-1)).view(*target.shape)
+        B, T = predictions.shape[0], predictions.shape[1]
+        errors = self.metric(
+            predictions.view(B * T, *predictions.shape[2:]),
+            target.view(B * T, *target.shape[2:])
+        ).view(B, T)
         info[self.errors_key] = errors
 
         return info
