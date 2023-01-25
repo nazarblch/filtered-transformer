@@ -2,9 +2,9 @@ from collections import namedtuple
 from typing import Iterator, Tuple, List, Callable, Optional
 import torch
 from torch import Tensor, nn
-from memup.base import State, MemUpMemory, DataCollectorAppend, MemoryOut
+from memup.base import State, MemUpMemory, DataCollectorAppend, MemoryOut, DataCollectorReplace
 from memup.data_filters import SlidingWindowFilter
-from memup.loss import TOS, PT
+from memup.loss import TOS, PT, TS
 from metrics.base import Metric
 from models.pos_encoding import EmbedWithPos, LinearEmbedWithPos
 from models.transformers import TorchRecurrentTransformer, RecurrentTransformer
@@ -29,6 +29,25 @@ class Predictor(nn.Module):
 
     def forward(self, x: Tensor, state: State):
         out = self.encoder.forward(x, torch.cat([state, state], -1)).out
+        return self.head(out)
+
+
+class PredictorFromState(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.encoder = TorchRecurrentTransformer(128, 4, 2, 512, dropout=0.1)
+        self.head = nn.Sequential(
+            nn.Linear(128, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.Dropout(0.1),
+            nn.ReLU(),
+            nn.Linear(256, 1)
+        )
+
+    def forward(self, state: State):
+        out = self.encoder.forward(state, state).out[:, -1]
         return self.head(out)
 
 
@@ -61,9 +80,31 @@ class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
         return DataType(pad_x, y, mask, i2_pad - i1_pad)
 
 
+class SeqDataFilterImpl2(SlidingWindowFilter[DataType]):
+
+    def __init__(self, size: int):
+        super().__init__(size, padding=size // 5)
+
+    def filter_data(self, data: DataType, i1: int, i2: int, i1_pad: int, i2_pad: int) -> DataType:
+        pad_x = data.x[:, i1_pad: i2_pad]
+        y = data.y[data.mask]
+
+        return DataType(pad_x, y, None, i2_pad - i1_pad)
+
+
 class DataCollectorTrain(DataCollectorAppend[DataType, TOS]):
     def apply(self, data: DataType, out: MemoryOut, state: State) -> TOS:
         return TOS(data.y, out, state)
+
+
+class DataCollectorTrainFromState(DataCollectorAppend[DataType, TS]):
+    def apply(self, data: DataType, out: MemoryOut, state: State) -> TS:
+        return TS(data.y, state)
+
+
+class DataCollectorLastState(DataCollectorReplace[DataType, TS]):
+    def apply(self, data: DataType, out: MemoryOut, state: State) -> TS:
+        return TS(data.y, state)
 
 
 class DataCollectorEvalWithState(DataCollectorAppend[DataType, PT]):

@@ -23,8 +23,8 @@ class AddTask(Dataset):
         mask = torch.zeros(B, self.size, dtype=bool)
         for i in range(B):
             p1 = random.randint(0, self.size - 3)
-            p2 = random.randint(p1, self.size - 2)
-            p3 = random.randint(p2, self.size - 1)
+            p2 = random.randint(p1 + 1, self.size - 2)
+            p3 = random.randint(p2 + 1, self.size - 1)
             X0[i, p1] = 1
             X0[i, p2] = 1
             X0[i, p3] = 1
