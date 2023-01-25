@@ -47,7 +47,7 @@ class PositionalEncoding2(nn.Module):
 
 class LinearEmbedWithPos(nn.Module):
 
-    def __init__(self, dim: int, d_model: int, multiplier: float, max_len: int = 5000):
+    def __init__(self, dim: int, d_model: int, multiplier: float, max_len: int = 1000):
         super().__init__()
         self.embed = nn.Linear(dim, d_model)
         self.pos_encoder = PositionalEncoding2(d_model, max_len=max_len)

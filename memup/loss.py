@@ -164,6 +164,27 @@ class EvalLoss(MemUpLoss):
             info["metrics"][m.name] = val
 
 
+class EvalLossWithMask(EvalLoss):
+
+    @torch.no_grad()
+    def forward(self, collector: DataCollectorAppend[SD, PT], info: Info) -> None:
+        pred_seq, target_seq = collector.result()
+        targets = torch.cat(target_seq, 1)
+        predictions = torch.cat(pred_seq, 1)
+
+        assert "mask" in info
+
+        mask = info["mask"]
+        predictions, targets = predictions[mask], targets[mask]
+        assert predictions.shape[0] == targets.shape[0]
+
+        info["metrics"] = {}
+
+        for m in self.metrics:
+            val = m(predictions, targets.cuda())
+            info["metrics"][m.name] = val
+
+
 class EvalLossStateOnly(MemUpLoss):
 
     def __init__(self, predictor: nn.Module, metrics: List[Metric]):

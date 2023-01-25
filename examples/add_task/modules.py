@@ -1,15 +1,16 @@
 from collections import namedtuple
 from typing import Iterator, Tuple, List, Callable, Optional
 import torch
-from sklearn.metrics import accuracy_score
 from torch import Tensor, nn
-from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, MemUpLossIterator, State, Info, Done, InfoUpdate
+from memup.base import State, MemUpMemory, DataCollectorAppend, MemoryOut
 from memup.data_filters import SlidingWindowFilter
+from memup.loss import TOS, PT
 from metrics.base import Metric
 from models.pos_encoding import EmbedWithPos, LinearEmbedWithPos
 from models.transformers import TorchRecurrentTransformer, RecurrentTransformer
 
-DataType = namedtuple("DataType", ["x", "y", "length"])
+
+DataType = namedtuple("DataType", ["x", "y", "mask", "length"])
 
 
 class Predictor(nn.Module):
@@ -47,18 +48,6 @@ class MemUpMemoryImpl(MemUpMemory):
         return out, os.state
 
 
-class TailAccuracyMetric(Metric):
-
-    def __init__(self):
-        super().__init__("TailAccuracy")
-
-    @torch.no_grad()
-    def __call__(self, logits: Tensor, labels: Tensor) -> float:
-        T = logits.shape[1]
-        logits, labels = logits[:, T - 10:], labels[:, T - 10:]
-        return accuracy_score(logits.argmax(-1).reshape(-1).cpu().numpy(), labels.reshape(-1).cpu().numpy())
-
-
 class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
 
     def __init__(self, size: int):
@@ -67,5 +56,23 @@ class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
     def filter_data(self, data: DataType, i1: int, i2: int, i1_pad: int, i2_pad: int) -> DataType:
         pad_x = data.x[:, i1_pad: i2_pad]
         y = data.y[:, i1: i2]
+        mask = data.mask[:, i1: i2]
 
-        return DataType(pad_x, y, i2_pad - i1_pad)
+        return DataType(pad_x, y, mask, i2_pad - i1_pad)
+
+
+class DataCollectorTrain(DataCollectorAppend[DataType, TOS]):
+    def apply(self, data: DataType, out: MemoryOut, state: State) -> TOS:
+        return TOS(data.y, out, state)
+
+
+class DataCollectorEvalWithState(DataCollectorAppend[DataType, PT]):
+
+    def __init__(self, predictor: nn.Module, state: Tensor):
+        super().__init__()
+        self.predictor = predictor
+        self.state = state
+
+    def apply(self, data: DataType, out: MemoryOut, state: State) -> PT:
+        pred = self.predictor(out, self.state)
+        return PT(pred, data.y)

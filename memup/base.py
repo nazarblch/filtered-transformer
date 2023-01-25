@@ -42,23 +42,27 @@ class DataCollector(Generic[SD, CT], ABC):
     def append(self, data: SD, out: MemoryOut, state: State) -> None:
         pass
 
-    def result(self):
+    def result(self, cat_dims: Tuple[int] = (), cat_keys: Tuple[str] = ()):
         assert len(self.collection) > 0
-        if isinstance(self.collection[0], tuple):
-            return tuple(list(zip(*self.collection)))
-        if isinstance(self.collection[0], list):
-            return list(zip(*self.collection))
+        if isinstance(self.collection[0], (tuple, list)):
+            res = list(zip(*self.collection))
+            for dim in cat_dims:
+                res[dim] = torch.cat(res, dim)
+            res = tuple(res) if isinstance(self.collection[0], tuple) else res
+            return res
+
         if isinstance(self.collection[0], dict):
             res = {k: [] for k in self.collection[0].keys()}
             for d in self.collection:
                 for k, v in d.items():
+                    v = torch.cat(v) if k in cat_keys else v
                     res[k].append(v)
             return res
         if isinstance(self.collection[0], NamedTuple):
-            print("named tuple")
             res = self.collection[0].__class__(*[[]] * len(self.collection[0]._fields))
             for d in self.collection:
                 for k, v in d.items():
+                    v = torch.cat(v) if k in cat_keys else v
                     res[k].append(v)
             return res
 
@@ -80,6 +84,14 @@ class DataCollectorReplace(DataCollector[SD, CT], ABC):
             self.collection.append(self.apply(data, out, state))
         else:
             self.collection[0] = self.apply(data, out, state)
+
+
+class DataCollectorEmpty(DataCollector[SD, CT]):
+    def append(self, data: SD, out: MemoryOut, state: State) -> None:
+        pass
+
+    def apply(self, data: SD, out: MemoryOut, state: State) -> CT:
+        pass
 
 
 class MemUpLoss(nn.Module, ABC, Generic[SD, CT]):
