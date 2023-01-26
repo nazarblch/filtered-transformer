@@ -40,9 +40,9 @@ train_loader = DataLoader(CopyTask(10000, 10, seq_length), shuffle=True, batch_s
 test_loader = DataLoader(CopyTask(1000, 10, seq_length), shuffle=False, batch_size=250)
 
 opt = torch.optim.Adam([
-    {"params": mem_transformer.parameters(), "lr": 2e-5},
-    {"params": embed.parameters(), "lr": 2e-5},
-    {"params": predictor.parameters(), "lr": 2e-5}
+    {"params": mem_transformer.parameters(), "lr": 5e-5},
+    {"params": embed.parameters(), "lr": 5e-5},
+    {"params": predictor.parameters(), "lr": 5e-5}
 ])
 
 mem_acc = Accumulator(mem_transformer, decay=0.95)
@@ -62,7 +62,7 @@ memup_iter = MemoryRolloutWithLoss[DataType, TOS](
         IncrementStep(),
         NStepUpdate(ContextPreprocessor(MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()), SeqDataFilterImpl(rollout)), 200),
         NStepUpdate(ErrorPreprocessor(pred_acc.get_module(), nn.CrossEntropyLoss(reduction="none"), lambda data: data.y), 200),
-        NStepUpdate(TargetsSampler(10, lambda data: data.y), 4, offset=0)
+        NStepUpdate(TargetsSampler(10, lambda data: data.y, is_random=False), 4, offset=0)
     ]
 )
 

@@ -4,8 +4,8 @@ import time
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from metrics.mse import MSEMetric
-from modules import Predictor, DataType, MemUpMemoryImpl, SeqDataFilterImpl2, DataCollectorEvalWithState, DataCollectorTrain, \
-    PredictorFromState, DataCollectorTrainFromState, DataCollectorLastState
+from modules import Predictor, DataType, MemUpMemoryImpl, SeqDataFilterImpl, DataCollectorTrain, \
+    DataCollectorLastState
 from data import AddTask
 from memup.accumulator import Accumulator
 from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, State, Info, Done, InfoUpdate, \
@@ -18,22 +18,23 @@ from models.transformers import BertRecurrentTransformer, RecurrentTransformerFr
     BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer, TorchRecurrentNN
 
 
-mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
-embed = LinearEmbedWithPos(2, 128, 5.0).cuda()
-predictor = PredictorFromState().cuda()
+# mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
+mem_transformer = TorchRecurrentNN(128, dropout=0.1).cuda()
+embed = LinearEmbedWithPos(2, 128, 10.0).cuda()
+predictor = Predictor().cuda()
 
 seq_length = 500
-rollout = 50
-state_length = 20
-writer = SummaryWriter(f"/home/jovyan/pomoika/add_{seq_length}_{time.time()}")
+rollout = 20
+state_length = 4
+writer = SummaryWriter(f"/home/slavic/pomoika/add_{seq_length}_{time.time()}")
 
 train_loader = DataLoader(AddTask(10000, seq_length), shuffle=True, batch_size=128)
 test_loader = DataLoader(AddTask(1000, seq_length), shuffle=False, batch_size=250)
 
 opt = torch.optim.Adam([
-    {"params": mem_transformer.parameters(), "lr": 5e-5},
-    {"params": embed.parameters(), "lr": 5e-5},
-    {"params": predictor.parameters(), "lr": 5e-5}
+    {"params": mem_transformer.parameters(), "lr": 2e-5},
+    {"params": embed.parameters(), "lr": 2e-5},
+    {"params": predictor.parameters(), "lr": 2e-5}
 ])
 
 
@@ -43,7 +44,7 @@ memup_iter = MemoryRolloutWithLoss[DataType, TS](
     loss=PredictorLossStateOnly(predictor, [
         LossModule(nn.MSELoss(), "MSE", 1.0),
     ]),
-    data_filter=SeqDataFilterImpl2(rollout),
+    data_filter=SeqDataFilterImpl(rollout),
     info_update=[
         IncrementStep()
     ]
@@ -53,7 +54,7 @@ memup_iter = MemoryRolloutWithLoss[DataType, TS](
 memup_iter_eval = MemoryRollout[DataType](
     steps=1000,
     memory=MemUpMemoryImpl(embed, mem_transformer),
-    data_filter=SeqDataFilterImpl2(rollout),
+    data_filter=SeqDataFilterImpl(rollout),
     info_update=[
         IncrementStep()
     ]
@@ -69,10 +70,10 @@ def eval(i):
     mem_transformer.eval()
     predictor.eval()
 
-    for x, y, m in test_loader:
+    for x, y in test_loader:
         state2 = torch.zeros(x.shape[0], state_length, 128).cuda()
 
-        collector, last_state, _, _ = memup_iter_eval.forward(DataType(x, y, m, x.shape[1]), state2, {}, DataCollectorLastState())
+        collector, last_state, _, _ = memup_iter_eval.forward(DataType(x, y, x.shape[1]), state2, {}, DataCollectorLastState())
         info2 = {}
         eval_loss.forward(collector, info2)
 
@@ -90,7 +91,7 @@ for i in range(1000):
 
     last_info = {}
 
-    for x, y, m in train_loader:
+    for x, y in train_loader:
         print()
 
         state = torch.zeros(x.shape[0], state_length, 128).cuda()
@@ -102,7 +103,7 @@ for i in range(1000):
 
             opt.zero_grad()
 
-            loss, state, info, done = memup_iter.forward(DataType(x, y, m, T), state, info, DataCollectorTrainFromState())
+            loss, state, info, done = memup_iter.forward(DataType(x, y, T), state, info, DataCollectorTrain())
             last_info = info['losses']
 
             loss.backward()

@@ -11,20 +11,21 @@ from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, State, Info, Done,
     MemoryRolloutWithLoss, MemoryRollout, DataCollectorEmpty
 from memup.loss import PredictorLossWithContext, LossModule, EvalLoss, TOS, PT, EvalLossWithMask
 from memup.preproc import ContextPreprocessor, NStepUpdate, IncrementStep, ErrorPreprocessor, TargetsSampler, \
-    TailTargets
+    TailTargets, select_by_index
 from models.pos_encoding import EmbedWithPos, LinearEmbedWithPos
 from models.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
     BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer, TorchRecurrentNN
 
 
 mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
+# mem_transformer = TorchRecurrentNN(128, dropout=0.1).cuda()
 embed = LinearEmbedWithPos(2, 128, 5.0).cuda()
 predictor = Predictor().cuda()
 
 seq_length = 500
 rollout = 50
 state_length = 20
-writer = SummaryWriter(f"/home/jovyan/pomoika/add_{seq_length}_{time.time()}")
+writer = SummaryWriter(f"/home/slavic/pomoika/add_{seq_length}_{time.time()}")
 
 train_loader = DataLoader(AddTask(10000, seq_length), shuffle=True, batch_size=128)
 test_loader = DataLoader(AddTask(1000, seq_length), shuffle=False, batch_size=250)
@@ -35,9 +36,9 @@ opt = torch.optim.Adam([
     {"params": predictor.parameters(), "lr": 5e-5}
 ])
 
-mem_acc = Accumulator(mem_transformer, decay=0.95)
-pred_acc = Accumulator(predictor, decay=0.95)
-embed_acc = Accumulator(embed, decay=0.95)
+mem_acc = Accumulator(mem_transformer, decay=0.5)
+pred_acc = Accumulator(predictor, decay=0.5)
+embed_acc = Accumulator(embed, decay=0.5)
 
 
 memup_iter = MemoryRolloutWithLoss[DataType, TOS](
@@ -118,6 +119,15 @@ for i in range(1000):
         mem_acc.accumulate()
         pred_acc.accumulate()
         embed_acc.accumulate()
+
+        state2 = torch.zeros(x.shape[0], state_length, 128).cuda()
+        collector, _, _, _ = memup_iter_eval.forward(DataType(x, y, m, x.shape[1]), state2, {}, DataCollectorEvalWithState(predictor, state))
+        info2 = {"mask": m}
+        eval_loss.forward(collector, info2)
+
+        print(info2["metrics"])
+        for name, val in info2["metrics"].items():
+            writer.add_scalar(f"eval train/{name} last state", val, i)
 
         print(last_info)
         for name, val in last_info.items():

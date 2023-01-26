@@ -107,24 +107,29 @@ class ErrorPreprocessor(InfoUpdate[SD]):
 
 
 class TargetsSampler(InfoUpdate[SD]):
-    def __init__(self, count: int, get_target: Callable[[SD], Tensor],
+    def __init__(self, count: int, get_target: Callable[[SD], Tensor], is_random=False,
                  context_key="context", errors_key="errors",
                  selected_context_key="context_selected", selected_target_key="context_target"):
         self.get_target = get_target
+        self.is_random = is_random
         self.errors_key = errors_key
         self.context_key = context_key
         self.count = count
         self.selected_context_key = selected_context_key
         self.selected_target_key = selected_target_key
 
-    def sample_data(self, context: Tensor, errors: Tensor, target: Tensor):
+    def sample_data(self, context: Tensor, errors: Tensor, target: Tensor, info: Info):
         count = self.count
         assert torch.all(errors >= 0)
-        probs = errors / errors.sum(dim=1, keepdim=True)
-        index = torch.multinomial(probs, count, replacement=False)
+        if self.is_random:
+            probs = errors / errors.sum(dim=1, keepdim=True)
+            index = torch.multinomial(probs, count, replacement=False)
+        else:
+            index = torch.topk(errors, count, dim=1).indices
 
         # selected_errors = torch.gather(errors, 1, index[:, :, 0]).reshape(B, count)
         # print("errors:", errors.mean(), "selected_errors:", selected_errors.mean().item())
+        info["index"] = index
 
         return select_by_index(index, context), select_by_index(index, target)
 
@@ -134,7 +139,8 @@ class TargetsSampler(InfoUpdate[SD]):
         info[self.selected_context_key], info[self.selected_target_key] = self.sample_data(
             torch.cat(info[self.context_key], dim=1),
             info[self.errors_key],
-            self.get_target(data)
+            self.get_target(data),
+            info
         )
 
         return info

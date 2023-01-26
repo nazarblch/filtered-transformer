@@ -134,7 +134,7 @@ class PredictorLossWithContext(PredictorLoss):
         assert context.shape[1] == context_target.shape[1]
         loss, losses = self.loss(s0, context, context_target)
         if loss1 is not None:
-            loss = (loss + loss1) / 2
+            loss = (loss * 2 + loss1) / 2
         for name, l in losses.items():
             info["losses"][f"{name} selected"] = l
 
