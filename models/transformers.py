@@ -85,10 +85,11 @@ class TorchRecurrentNN(RecurrentTransformer):
         super().__init__()
 
         self.lstm = nn.LSTM(d_model, d_model, num_layers, dropout=dropout, batch_first=True)
+        self.num_layers = num_layers
 
     def forward(self, x: Tensor, state: Tensor) -> RecurrentOutput:
-        h = state[:, :2].transpose(0, 1).contiguous()
-        c = state[:, 2:4].transpose(0, 1).contiguous()
+        h = state[:, :self.num_layers].transpose(0, 1).contiguous()
+        c = state[:, self.num_layers: self.num_layers * 2].transpose(0, 1).contiguous()
         out, (h, c) = self.lstm.forward(x, (h, c))
         s = torch.cat([h, c]).transpose(0, 1)
 

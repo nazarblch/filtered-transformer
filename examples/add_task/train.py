@@ -18,7 +18,7 @@ from models.transformers import BertRecurrentTransformer, RecurrentTransformerFr
 
 
 mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
-# mem_transformer = TorchRecurrentNN(128, dropout=0.1).cuda()
+# mem_transformer = TorchRecurrentNN(128, num_layers=3, dropout=0.1).cuda()
 embed = LinearEmbedWithPos(2, 128, 5.0).cuda()
 predictor = Predictor().cuda()
 
@@ -44,9 +44,7 @@ embed_acc = Accumulator(embed, decay=0.9)
 memup_iter = MemoryRolloutWithLoss[DataType, TOS](
     steps=2,
     memory=MemUpMemoryImpl(embed, mem_transformer),
-    loss=PredictorLossWithContext(predictor, [
-        LossModule(nn.MSELoss(), "MSE", 1.0),
-    ]),
+    loss=PredictorLossWithContext(predictor, [LossModule(nn.MSELoss(), "MSE", 1.0)], cur_step_loss_coef=10),
     data_filter=SeqDataFilterImpl(rollout),
     info_update=[
         IncrementStep(),
