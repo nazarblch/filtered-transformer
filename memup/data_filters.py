@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Tuple
+
+import torch
+
 from memup.base import SeqDataFilter, SD, State, Info, Done
 
 
@@ -26,5 +29,11 @@ class SlidingWindowFilter(SeqDataFilter[SD], ABC):
         i2 = i1 + BS
         i1_pad = max(0, i1 - self.padding)
         i2_pad = min(T, i2 + self.padding)
+
+        ids = torch.arange(i1, i2)[None, ].expand(state.shape[0], -1)
+        if "filter_window" not in info:
+            info["filter_window"] = ids
+        else:
+            info["filter_window"] = torch.cat([info["filter_window"], ids], 1)
 
         return self.filter_data(data, i1, i2, i1_pad, i2_pad), done

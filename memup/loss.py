@@ -125,16 +125,26 @@ class PredictorLossWithContext(PredictorLoss):
 
     def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info) -> Tensor:
         loss1 = super().forward(collector, info)
-        _, _, state_seq = collector.result()
+        _, out_seq, state_seq = collector.result()
         s0 = torch.cat(state_seq, 0)
+        out = torch.cat(out_seq, 1)
+
+        # cur_index = info["filter_window"][:, info["filter_window"].shape[1] - out.shape[1]:]
+        # i1 = cur_index[0][0].item()
+        # i2 = cur_index[0][-1].item()
+        # selected_index = info["selected_index"]
+        # mask = ((i1 <= selected_index) * (i2 > selected_index)).cuda()
+        # flatten_index = (selected_index - i1) + torch.arange(0, selected_index.shape[0])[:, None] * (i2 - i1)
+        # flatten_index = flatten_index.cuda()[mask]
 
         assert self.context_selected_key in info and self.context_target_key in info
         context = info[self.context_selected_key].cuda()
+        # context[mask] = out.reshape(-1, out.shape[-1])[flatten_index]
         context_target = info[self.context_target_key]
         assert context.shape[1] == context_target.shape[1]
         loss, losses = self.loss(s0, context, context_target)
         if loss1 is not None:
-            loss = (loss * 2 + loss1) / 2
+            loss = (loss + loss1 * 10) / 2
         for name, l in losses.items():
             info["losses"][f"{name} selected"] = l
 

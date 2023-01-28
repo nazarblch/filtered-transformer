@@ -1,4 +1,5 @@
-from typing import Generic, Dict, Any, Callable
+import random
+from typing import Generic, Dict, Any, Callable, Tuple
 from memup.base import SeqDataFilter, SD, MemUpMemory, State, InfoUpdate, Info
 import torch
 from torch import nn, Tensor
@@ -107,7 +108,7 @@ class ErrorPreprocessor(InfoUpdate[SD]):
 
 
 class TargetsSampler(InfoUpdate[SD]):
-    def __init__(self, count: int, get_target: Callable[[SD], Tensor], is_random=False,
+    def __init__(self, count: Tuple[int, int], get_target: Callable[[SD], Tensor], is_random=False,
                  context_key="context", errors_key="errors",
                  selected_context_key="context_selected", selected_target_key="context_target"):
         self.get_target = get_target
@@ -119,7 +120,7 @@ class TargetsSampler(InfoUpdate[SD]):
         self.selected_target_key = selected_target_key
 
     def sample_data(self, context: Tensor, errors: Tensor, target: Tensor, info: Info):
-        count = self.count
+        count = random.randint(*self.count)
         assert torch.all(errors >= 0)
         if self.is_random:
             probs = errors / errors.sum(dim=1, keepdim=True)
@@ -129,7 +130,7 @@ class TargetsSampler(InfoUpdate[SD]):
 
         # selected_errors = torch.gather(errors, 1, index[:, :, 0]).reshape(B, count)
         # print("errors:", errors.mean(), "selected_errors:", selected_errors.mean().item())
-        info["index"] = index
+        info["selected_index"] = index
 
         return select_by_index(index, context), select_by_index(index, target)
 

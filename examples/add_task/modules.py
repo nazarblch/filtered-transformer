@@ -48,14 +48,15 @@ class MemUpMemoryImpl(MemUpMemory):
         os = self.mem_tr.forward(x_embed, state)
         assert os.out.shape[1] >= data.y.shape[1]
         out = torch.cat([os.out, x_embed], -1)
-        out = out[:, out.shape[1] - data.y.shape[1]:]
+        padding = (out.shape[1] - data.y.shape[1]) // 2
+        out = out[:, padding: padding + data.y.shape[1]]
         return out, os.state
 
 
 class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
 
     def __init__(self, size: int):
-        super().__init__(size, padding=size // 5)
+        super().__init__(size, padding=0)
 
     def filter_data(self, data: DataType, i1: int, i2: int, i1_pad: int, i2_pad: int) -> DataType:
         pad_x = data.x[:, i1_pad: i2_pad]
@@ -64,17 +65,6 @@ class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
 
         return DataType(pad_x, y, mask, i2_pad - i1_pad)
 
-
-class SeqDataFilterImpl2(SlidingWindowFilter[DataType]):
-
-    def __init__(self, size: int):
-        super().__init__(size, padding=size // 5)
-
-    def filter_data(self, data: DataType, i1: int, i2: int, i1_pad: int, i2_pad: int) -> DataType:
-        pad_x = data.x[:, i1_pad: i2_pad]
-        y = data.y[data.mask]
-
-        return DataType(pad_x, y, None, i2_pad - i1_pad)
 
 
 class DataCollectorTrain(DataCollectorAppend[DataType, TOS]):

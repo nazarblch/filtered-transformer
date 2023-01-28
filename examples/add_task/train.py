@@ -36,9 +36,9 @@ opt = torch.optim.Adam([
     {"params": predictor.parameters(), "lr": 5e-5}
 ])
 
-mem_acc = Accumulator(mem_transformer, decay=0.5)
-pred_acc = Accumulator(predictor, decay=0.5)
-embed_acc = Accumulator(embed, decay=0.5)
+mem_acc = Accumulator(mem_transformer, decay=0.9)
+pred_acc = Accumulator(predictor, decay=0.9)
+embed_acc = Accumulator(embed, decay=0.9)
 
 
 memup_iter = MemoryRolloutWithLoss[DataType, TOS](
@@ -52,14 +52,14 @@ memup_iter = MemoryRolloutWithLoss[DataType, TOS](
         IncrementStep(),
         NStepUpdate(ContextPreprocessor(MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()), SeqDataFilterImpl(rollout)), 200),
         NStepUpdate(ErrorPreprocessor(pred_acc.get_module(), nn.MSELoss(reduction="none"), lambda data: data.y), 200),
-        NStepUpdate(TargetsSampler(1, lambda data: data.y), 4, offset=0)
+        NStepUpdate(TargetsSampler((1, 10), lambda data: data.y), 4, offset=0)
     ]
 )
 
 
 memup_iter_eval = MemoryRollout[DataType](
     steps=1000,
-    memory=MemUpMemoryImpl(embed, mem_transformer),
+    memory=MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()),
     data_filter=SeqDataFilterImpl(rollout),
     info_update=[
         IncrementStep()
@@ -115,6 +115,11 @@ for i in range(1000):
 
             loss.backward()
             opt.step()
+
+        context = torch.cat(info["context"], 1)[m][:, None]
+        tg = y[m][:, None]
+        pred = predictor.forward(context.cuda(), state).cpu()
+        print("ll", nn.MSELoss()(pred, tg).item())
 
         mem_acc.accumulate()
         pred_acc.accumulate()
