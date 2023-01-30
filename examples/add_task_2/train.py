@@ -3,8 +3,9 @@ from torch.utils.tensorboard import SummaryWriter
 import time
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
+from data_filters.sliding_window import SlidingWindowFilterTuple
 from metrics.mse import MSEMetric
-from modules import Predictor, DataType, MemUpMemoryImpl, SeqDataFilterImpl, DataCollectorTrain, \
+from modules import Predictor, DataType, MemUpMemoryImpl, DataCollectorTrain, \
     DataCollectorLastState
 from data import AddTask
 from memup.accumulator import Accumulator
@@ -13,30 +14,30 @@ from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, State, Info, Done,
 from memup.loss import PredictorLossWithContext, LossModule, EvalLoss, TS, PT, EvalLossWithMask, PredictorLossStateOnly, EvalLossStateOnly
 from memup.preproc import ContextPreprocessor, NStepUpdate, IncrementStep, ErrorPreprocessor, TargetsSampler, \
     TailTargets
-from models.pos_encoding import EmbedWithPos, LinearEmbedWithPos
-from models.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
+from common_modules.pos_encoding import EmbedWithPos, LinearEmbedWithPos
+from common_modules.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
     BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer, TorchRecurrentNN
 
 
-# mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
-mem_transformer = TorchRecurrentNN(128, dropout=0.1).cuda()
+mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
 embed = LinearEmbedWithPos(2, 128, 10.0).cuda()
 predictor = Predictor().cuda()
 
 seq_length = 500
-rollout = 20
-state_length = 4
+rollout = 50
+state_length = 20
 writer = SummaryWriter(f"/home/slavic/pomoika/add_{seq_length}_{time.time()}")
 
 train_loader = DataLoader(AddTask(10000, seq_length), shuffle=True, batch_size=128)
 test_loader = DataLoader(AddTask(1000, seq_length), shuffle=False, batch_size=250)
 
 opt = torch.optim.Adam([
-    {"params": mem_transformer.parameters(), "lr": 2e-5},
-    {"params": embed.parameters(), "lr": 2e-5},
-    {"params": predictor.parameters(), "lr": 2e-5}
+    {"params": mem_transformer.parameters(), "lr": 5e-5},
+    {"params": embed.parameters(), "lr": 5e-5},
+    {"params": predictor.parameters(), "lr": 5e-5}
 ])
 
+data_filter = SlidingWindowFilterTuple[DataType](rollout, padding=0, skip_fields={"length", "y"})
 
 memup_iter = MemoryRolloutWithLoss[DataType, TS](
     steps=2,
@@ -44,17 +45,16 @@ memup_iter = MemoryRolloutWithLoss[DataType, TS](
     loss=PredictorLossStateOnly(predictor, [
         LossModule(nn.MSELoss(), "MSE", 1.0),
     ]),
-    data_filter=SeqDataFilterImpl(rollout),
+    data_filter=data_filter,
     info_update=[
         IncrementStep()
     ]
 )
 
-
 memup_iter_eval = MemoryRollout[DataType](
     steps=1000,
     memory=MemUpMemoryImpl(embed, mem_transformer),
-    data_filter=SeqDataFilterImpl(rollout),
+    data_filter=data_filter,
     info_update=[
         IncrementStep()
     ]

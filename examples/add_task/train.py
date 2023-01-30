@@ -3,6 +3,8 @@ from torch.utils.tensorboard import SummaryWriter
 import time
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
+
+from data_filters.sliding_window import SlidingWindowFilterTuple
 from metrics.mse import MSEMetric
 from modules import Predictor, DataType, MemUpMemoryImpl, SeqDataFilterImpl, DataCollectorEvalWithState, DataCollectorTrain
 from data import AddTask
@@ -12,13 +14,12 @@ from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, State, Info, Done,
 from memup.loss import PredictorLossWithContext, LossModule, EvalLoss, TOS, PT, EvalLossWithMask
 from memup.preproc import ContextPreprocessor, NStepUpdate, IncrementStep, ErrorPreprocessor, TargetsSampler, \
     TailTargets, select_by_index
-from models.pos_encoding import EmbedWithPos, LinearEmbedWithPos
-from models.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
+from common_modules.pos_encoding import EmbedWithPos, LinearEmbedWithPos
+from common_modules.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
     BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer, TorchRecurrentNN
 
 
 mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
-# mem_transformer = TorchRecurrentNN(128, num_layers=3, dropout=0.1).cuda()
 embed = LinearEmbedWithPos(2, 128, 5.0).cuda()
 predictor = Predictor().cuda()
 
@@ -40,25 +41,25 @@ mem_acc = Accumulator(mem_transformer, decay=0.9)
 pred_acc = Accumulator(predictor, decay=0.9)
 embed_acc = Accumulator(embed, decay=0.9)
 
+data_filter = SlidingWindowFilterTuple[DataType](rollout, padding=0, skip_fields={"length"})
 
 memup_iter = MemoryRolloutWithLoss[DataType, TOS](
     steps=2,
     memory=MemUpMemoryImpl(embed, mem_transformer),
     loss=PredictorLossWithContext(predictor, [LossModule(nn.MSELoss(), "MSE", 1.0)], cur_step_loss_coef=10),
-    data_filter=SeqDataFilterImpl(rollout),
+    data_filter=data_filter,
     info_update=[
         IncrementStep(),
-        NStepUpdate(ContextPreprocessor(MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()), SeqDataFilterImpl(rollout)), 200),
+        NStepUpdate(ContextPreprocessor(MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()), data_filter), 200),
         NStepUpdate(ErrorPreprocessor(pred_acc.get_module(), nn.MSELoss(reduction="none"), lambda data: data.y), 200),
         NStepUpdate(TargetsSampler((1, 10), lambda data: data.y), 4, offset=0)
     ]
 )
 
-
 memup_iter_eval = MemoryRollout[DataType](
     steps=1000,
     memory=MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()),
-    data_filter=SeqDataFilterImpl(rollout),
+    data_filter=data_filter,
     info_update=[
         IncrementStep()
     ]
@@ -114,23 +115,9 @@ for i in range(1000):
             loss.backward()
             opt.step()
 
-        context = torch.cat(info["context"], 1)[m][:, None]
-        tg = y[m][:, None]
-        pred = predictor.forward(context.cuda(), state).cpu()
-        print("ll", nn.MSELoss()(pred, tg).item())
-
         mem_acc.accumulate()
         pred_acc.accumulate()
         embed_acc.accumulate()
-
-        state2 = torch.zeros(x.shape[0], state_length, 128).cuda()
-        collector, _, _, _ = memup_iter_eval.forward(DataType(x, y, m, x.shape[1]), state2, {}, DataCollectorEvalWithState(predictor, state))
-        info2 = {"mask": m}
-        eval_loss.forward(collector, info2)
-
-        print(info2["metrics"])
-        for name, val in info2["metrics"].items():
-            writer.add_scalar(f"eval train/{name} last state", val, i)
 
         print(last_info)
         for name, val in last_info.items():

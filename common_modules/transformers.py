@@ -11,7 +11,7 @@ from transformers import BertModel, BertConfig, PreTrainedTokenizer
 from typing import Dict, List
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
-from models.pos_encoding import PositionalEncoding2
+from common_modules.pos_encoding import PositionalEncoding2
 
 
 class RecurrentOutput:

@@ -1,16 +1,23 @@
 import math
+from abc import abstractmethod
 from copy import deepcopy
-from typing import Dict
-
+from typing import Dict, List, Tuple, Any
 from gena_lm.modeling_bert import BertModel, BertEncoder
 from torch import nn, Tensor
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from filter_model.base import FilterModel
-from models.stoch_tensor import StochasticMultinomialTensor
+from common_modules.stoch_tensor import StochasticMultinomialTensor
+from memup.base import SeqDataFilter, SD, State, Info, Done
 
 
-class ChunkFilter(FilterModel):
+class LearnableMask:
+    def __init__(self, mask: Tensor, lens: List[int], multiplier: Tensor):
+        self.mask = mask
+        self.lens = lens
+        self.multiplier = multiplier
+
+
+class LearnableBlockFilter(SeqDataFilter[SD]):
 
     def __init__(self, transformer: nn.TransformerEncoder, chunk_size: int, hidden_dim: int, n_chunks: int):
         super().__init__()
@@ -41,14 +48,22 @@ class ChunkFilter(FilterModel):
 
         return ttx
 
-    def filter_data(self, data: Tensor, hidden: Tensor, state: Tensor):
+    def make_filter(self, data: Tensor, state: Tensor, info: Info):
         B, T = data.shape[0], data.shape[1]
 
         state = state[:, -1][
             torch.arange(0, B, device=state.device).repeat_interleave(T // self.chunk_size)
         ]
 
-        F = self.head(torch.cat([state, hidden], dim=-1))
+        if "hidden_update_n" not in info:
+            info["hidden_update_n"] = 0
+        else:
+            info["hidden_update_n"] += 1
+
+        if info["hidden_update_n"] % 8 == 0:
+            info["hidden"] = self.preprocess_data(data)
+
+        F = self.head(torch.cat([state, info["hidden"].cuda()], dim=-1))
         F = F.view(B, T // self.chunk_size, F.shape[1]).transpose(1, 2)
         dist = StochasticMultinomialTensor(F)
         sample = dist.sample().max(1)[0]
@@ -62,30 +77,29 @@ class ChunkFilter(FilterModel):
 
         FD = sample.repeat_interleave(self.chunk_size, dim=1)
         lens = (FD > 0.5).type(torch.int64).sum(-1).detach().cpu().numpy().tolist()
-        x3 = data[FD > 0.5] * F1[:, None]
+        # x3 = data[FD > 0.5] * F1[:, None]
 
-        return x3, lens
+        return LearnableMask(FD, lens, F1[:, None])
 
-    def forward(self, data: Tensor):
+    def apply_mask(self, x: Tensor, mask: LearnableMask, train=True):
+        x = x[mask.mask > 0.5]
+        if train:
+            x = x * mask.multiplier
 
-        hidden = [None]
-        n = [0]
+        sp = torch.split(x, mask.lens, 0)
+        return pad_sequence(sp, batch_first=True)
 
-        def proc_state(state: Tensor):
+    @abstractmethod
+    def filter_data(self, data: SD, mask: LearnableMask) -> SD:
+        pass
 
-            if n[0] % 8 == 0:
-                hidden[0] = self.preprocess_data(data)
+    def forward(self, data: SD, state: State, info: Info, *args) -> Tuple[SD, Done]:
 
-            filtered_data, lens = self.filter_data(data, hidden[0], state)
-            sp = torch.split(filtered_data, lens, 0)
-            n[0] += 1
-
-            return pad_sequence(sp, batch_first=True)
-
-        return proc_state
+        mask = self.make_filter(data, state, info)
+        return self.filter_data(data, mask), False
 
 
-class BertChunkFilter(FilterModel):
+class BertLearnableBlockFilter(SeqDataFilter[Dict[str, Any]]):
 
     def __init__(self, bert: BertModel, chunk_size: int, n_chunks: int):
         super().__init__()
@@ -126,7 +140,6 @@ class BertChunkFilter(FilterModel):
         return h
 
     def preprocess_data(self, data: Dict[str, Tensor]):
-        B = data["input_ids"].shape[0]
 
         with torch.no_grad():
             xb = self.chunk(data)
@@ -134,14 +147,23 @@ class BertChunkFilter(FilterModel):
             ttx = xb[:, -1]
         return ttx
 
-    def filter_data(self, chunk_data: Dict[str, Tensor], hidden: Tensor, state: Tensor):
+    def filter_data(self, data: Dict[str, Tensor], state: Tensor, info: Info):
+        chunk_data = self.chunk(data)
         B, T = state.shape[0], (chunk_data["input_ids"].shape[0] * self.chunk_size) // state.shape[0]
 
         state = state[:, -1][
             torch.arange(0, B, device=state.device).repeat_interleave(T // self.chunk_size)
         ]
 
-        F = self.head(torch.cat([state, hidden], dim=-1))
+        if "hidden_update_n" not in info:
+            info["hidden_update_n"] = 0
+        else:
+            info["hidden_update_n"] += 1
+
+        if info["hidden_update_n"] % 8 == 0:
+            info["hidden"] = self.preprocess_data(data)
+
+        F = self.head(torch.cat([state, info["hidden"].cuda()], dim=-1))
         F = F.view(B, T // self.chunk_size, F.shape[1]).transpose(1, 2)
         dist = StochasticMultinomialTensor(F)
         sample = dist.sample().max(1)[0]
@@ -156,65 +178,16 @@ class BertChunkFilter(FilterModel):
 
         FD = sample.repeat_interleave(self.chunk_size, dim=1)
         lens = (FD > 0.5).type(torch.int64).sum(-1).detach().cpu().numpy().tolist()
+
         x3 = {k: v[(sample > 0.5).view(-1)].view(-1, *v.shape[2:]) for k, v in chunk_data.items()}
         x3["input_ids"] = x3["input_ids"] * F1[:, None]
 
         return x3, lens
 
-    def forward(self, data: Dict[str, Tensor]):
+    def forward(self, data: Dict[str, Tensor], state: State, info: Info, *args):
 
-        hidden = [None]
-        n = [0]
-        chunk_data = self.chunk(data)
-
-        def proc_state(state: Tensor):
-
-            if n[0] % 8 == 0:
-                hidden[0] = self.preprocess_data(data)
-
-            filtered_data, lens = self.filter_data(chunk_data, hidden[0], state)
-            # sp = torch.split(filtered_data, lens, 0)
-            sp = {k: torch.split(v, lens, 0) for k, v in filtered_data.items()}
-            n[0] += 1
-
-            # return pad_sequence(sp, batch_first=True)
-            return {k: pad_sequence(v, batch_first=True) for k, v in sp.items()}
-
-        return proc_state
+        filtered_data, lens = self.filter_data(data, state, info)
+        sp = {k: torch.split(v, lens, 0) for k, v in filtered_data.items()}
+        return {k: pad_sequence(v, batch_first=True) for k, v in sp.items()}, False
 
 
-class RandomChunkFilter(FilterModel):
-
-    def __init__(self, chunk_size: int, n_chunks: int):
-        super().__init__()
-        self.chunk_size = chunk_size
-        self.n_chunks = n_chunks
-
-    def chunk(self, x):
-        B, L, D = x.shape
-        assert L % self.chunk_size == 0
-        return x.view(B * L // self.chunk_size, self.chunk_size, D)
-
-    def filter_data(self, data: Tensor):
-        B, T = data.shape[0], data.shape[1]
-
-        F = torch.ones(B, T // self.chunk_size, self.n_chunks, device=data.device).transpose(1, 2)
-        dist = StochasticMultinomialTensor(F)
-        sample = dist.sample().max(1)[0]
-        FD = sample.repeat_interleave(self.chunk_size, dim=1)
-
-        lens = (FD > 0.5).type(torch.int64).sum(-1).detach().cpu().numpy().tolist()
-        x3 = data[FD > 0.5]
-
-        return x3, lens
-
-    def forward(self, data: Tensor):
-
-        def proc_state(state: Tensor):
-
-            filtered_data, lens = self.filter_data(data)
-            sp = torch.split(filtered_data, lens, 0)
-
-            return pad_sequence(sp, batch_first=True)
-
-        return proc_state

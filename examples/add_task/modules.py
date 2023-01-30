@@ -2,12 +2,13 @@ from collections import namedtuple
 from typing import Iterator, Tuple, List, Callable, Optional
 import torch
 from torch import Tensor, nn
+
+from data_filters.sliding_window import SlidingWindowFilter, SlidingWindowWithPadding
 from memup.base import State, MemUpMemory, DataCollectorAppend, MemoryOut, DataCollectorReplace
-from memup.data_filters import SlidingWindowFilter
 from memup.loss import TOS, PT, TS
 from metrics.base import Metric
-from models.pos_encoding import EmbedWithPos, LinearEmbedWithPos
-from models.transformers import TorchRecurrentTransformer, RecurrentTransformer
+from common_modules.pos_encoding import EmbedWithPos, LinearEmbedWithPos
+from common_modules.transformers import TorchRecurrentTransformer, RecurrentTransformer
 
 
 DataType = namedtuple("DataType", ["x", "y", "mask", "length"])
@@ -58,7 +59,9 @@ class SeqDataFilterImpl(SlidingWindowFilter[DataType]):
     def __init__(self, size: int):
         super().__init__(size, padding=0)
 
-    def filter_data(self, data: DataType, i1: int, i2: int, i1_pad: int, i2_pad: int) -> DataType:
+    def filter_data(self, data: DataType, window: SlidingWindowWithPadding) -> DataType:
+        i1, i2, i1_pad, i2_pad = window
+
         pad_x = data.x[:, i1_pad: i2_pad]
         y = data.y[:, i1: i2]
         mask = data.mask[:, i1: i2]

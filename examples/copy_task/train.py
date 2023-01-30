@@ -1,5 +1,3 @@
-from collections import namedtuple
-from typing import Iterator, Tuple, List, Callable, Optional
 import torch
 from sklearn.metrics import accuracy_score
 from torch.utils.tensorboard import SummaryWriter
@@ -9,22 +7,22 @@ from torch import Tensor, nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
-from modules import Predictor, DataType, MemUpMemoryImpl, SeqDataFilterImpl, TailAccuracyMetric, \
+
+from data_filters.sliding_window import SlidingWindowFilterTuple
+from modules import Predictor, DataType, MemUpMemoryImpl, TailAccuracyMetric, \
     DataCollectorEval, DataCollectorEvalWithState, DataCollectorTrain
 from data import CopyTask
-from datasets.enformer_h5 import EnformerDataset
 from memup.accumulator import Accumulator
 from memup.base import SeqDataFilter, MemUpMemory, MemUpLoss, State, Info, Done, InfoUpdate, \
     MemoryRolloutWithLoss, MemoryRollout
-from memup.data_filters import SlidingWindowFilter
 from memup.loss import PredictorLossWithContext, LossModule, EvalLoss, TOS, PT
 from memup.preproc import ContextPreprocessor, NStepUpdate, IncrementStep, ErrorPreprocessor, TargetsSampler, \
     TailTargets
 from metrics.accuracy import AccuracyMetric
 from metrics.base import Metric
 from metrics.pearson import PearsonCorrLoss, PearsonCorrMetric
-from models.pos_encoding import EmbedWithPos
-from models.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
+from common_modules.pos_encoding import EmbedWithPos
+from common_modules.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
     BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer, TorchRecurrentNN
 
 mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
@@ -45,10 +43,11 @@ opt = torch.optim.Adam([
     {"params": predictor.parameters(), "lr": 5e-5}
 ])
 
-mem_acc = Accumulator(mem_transformer, decay=0.95)
-pred_acc = Accumulator(predictor, decay=0.95)
-embed_acc = Accumulator(embed, decay=0.95)
+mem_acc = Accumulator(mem_transformer, decay=0.9)
+pred_acc = Accumulator(predictor, decay=0.9)
+embed_acc = Accumulator(embed, decay=0.9)
 
+data_filter = SlidingWindowFilterTuple[DataType](rollout, padding=0, skip_fields={"length"})
 
 memup_iter = MemoryRolloutWithLoss[DataType, TOS](
     steps=2,
@@ -56,13 +55,13 @@ memup_iter = MemoryRolloutWithLoss[DataType, TOS](
     loss=PredictorLossWithContext(predictor, [
         LossModule(nn.CrossEntropyLoss(), "CE", 1.0),
         LossModule(AccuracyMetric(), "TAcc", 0.0)
-    ]),
-    data_filter=SeqDataFilterImpl(rollout),
+    ], cur_step_loss_coef=1),
+    data_filter=data_filter,
     info_update=[
         IncrementStep(),
-        NStepUpdate(ContextPreprocessor(MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()), SeqDataFilterImpl(rollout)), 200),
+        NStepUpdate(ContextPreprocessor(MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()), data_filter), 200),
         NStepUpdate(ErrorPreprocessor(pred_acc.get_module(), nn.CrossEntropyLoss(reduction="none"), lambda data: data.y), 200),
-        NStepUpdate(TargetsSampler(10, lambda data: data.y, is_random=False), 4, offset=0)
+        NStepUpdate(TargetsSampler((10, 10), lambda data: data.y, is_random=False), 4, offset=0)
     ]
 )
 
@@ -71,7 +70,7 @@ memup_iter_eval = MemoryRolloutWithLoss[DataType, PT](
     steps=1000,
     memory=MemUpMemoryImpl(embed, mem_transformer),
     loss=EvalLoss([TailAccuracyMetric()]),
-    data_filter=SeqDataFilterImpl(rollout),
+    data_filter=data_filter,
     info_update=[
         IncrementStep()
     ]
