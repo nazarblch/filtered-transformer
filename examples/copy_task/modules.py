@@ -18,7 +18,10 @@ class Predictor(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.encoder = TorchRecurrentTransformer(256, 4, 2, 512, dropout=0.1)
+        self.decoder = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(256, 4, 512, 0.1, batch_first=True),
+            2
+        )
         self.head = nn.Sequential(
             nn.Linear(256, 256),
             nn.ReLU(),
@@ -29,7 +32,7 @@ class Predictor(nn.Module):
         )
 
     def forward(self, x: Tensor, state: State):
-        out = self.encoder.forward(x, torch.cat([state, state], -1)).out
+        out = self.decoder.forward(x, torch.cat([state, state], -1))
         return self.head(out)
 
 

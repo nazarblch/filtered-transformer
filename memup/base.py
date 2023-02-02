@@ -112,11 +112,13 @@ class MemoryRollout(Generic[SD]):
         self.rollout = steps
         self.info_update = info_update
 
-    def forward(self, data: SD, state: State, info: Info, collector: DataCollector[SD, CT]) -> Tuple[DataCollector[SD, CT], State, Info, Done]:
+    def forward(self, data: SD, state: State, info: Info, collector: DataCollector[SD, CT], steps=-1) -> Tuple[DataCollector[SD, CT], State, Info, Done]:
 
         done = False
+        if steps < 0:
+            steps = self.rollout
 
-        for step in range(self.rollout):
+        for step in range(steps):
 
             with torch.no_grad():
                 for update in self.info_update:

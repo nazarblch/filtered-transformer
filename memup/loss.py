@@ -3,6 +3,8 @@ from typing import List, Callable, Optional
 
 import torch
 from torch import nn, Tensor
+
+from data_filters.top_errors import InputTarget
 from memup.base import MemUpLoss, SDWithMemory, Info, SD, DataCollector, DataCollectorAppend, DataCollectorReplace
 from memup.preproc import select_by_index
 from metrics.base import Metric
@@ -125,15 +127,15 @@ class PredictorLossWithContext(PredictorLoss):
         self.context_target_key = context_target_key
         self.cur_step_loss_coef = cur_step_loss_coef
 
-    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info) -> Tensor:
+    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info, selected_data: InputTarget = None) -> Tensor:
         loss1 = super().forward(collector, info)
         _, out_seq, state_seq = collector.result()
         s0 = torch.cat(state_seq, 0)
 
-        assert self.context_selected_key in info and self.context_target_key in info
-        context = info[self.context_selected_key].cuda()
+        assert (self.context_selected_key in info and self.context_target_key in info) or selected_data is not None
+        context = info[self.context_selected_key].cuda() if selected_data is None else selected_data.input.cuda()
 
-        context_target = info[self.context_target_key]
+        context_target = info[self.context_target_key] if selected_data is None else selected_data.target
         assert context.shape[1] == context_target.shape[1]
         loss, losses = self.loss(s0, context, context_target)
         if loss1 is not None:
