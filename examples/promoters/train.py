@@ -1,13 +1,10 @@
 import time
-
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
-
 from data_filters.sliding_window import SlidingWindowFilterTuple
 from examples.promoters.data import Promoters
 from torch.utils.data import Dataset, DataLoader
 import torch
-
 from memup.loss import PredictorLoss, LossModule, PredictorLossStateOnly, EvalLossStateOnly
 from memup.preproc import IncrementStep
 from examples.promoters.modules import MemUpMemoryImpl, DataCollectorTrain, DataCollectorLastState
