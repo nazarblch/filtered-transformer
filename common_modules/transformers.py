@@ -142,6 +142,8 @@ class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):
                "attention_mask": pad_sequence([torch.tensor(t) for t in tokens["attention_mask"]], batch_first=True,
                                               padding_value=0).cuda()}
 
+        # print(len(text_seq[0]), res["input_ids"].shape)
+
         return super().forward(res, state)
 
 

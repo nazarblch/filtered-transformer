@@ -48,15 +48,15 @@ class SlidingWindowFilterTuple(Generic[SD], SlidingWindowFilter[SD]):
         self.pad_fields = pad_fields
         self.skip_fields = skip_fields
 
-    def filter_field(self, k, v, window: SlidingWindowWithPadding):
+    def filter_field(self, k, v, window: SlidingWindowWithPadding, has_batch: bool):
         i1, i2, i1_pad, i2_pad = window
 
         if k in self.pad_fields:
-            v = v[:, i1_pad: i2_pad]
+            v = v[:, i1_pad: i2_pad] if has_batch else v[i1_pad: i2_pad]
         elif k in self.skip_fields:
             v = v
         else:
-            v = v[:, i1: i2]
+            v = v[:, i1: i2] if has_batch else v[i1: i2]
 
         return v
 
@@ -67,9 +67,9 @@ class SlidingWindowFilterTuple(Generic[SD], SlidingWindowFilter[SD]):
         kw = {}
 
         for k, v in zip(fields, data):
-            if isinstance(v, list):
-                kw[k] = [self.filter_field(k, vi, window) for vi in v]
+            if isinstance(v, (list, tuple)):
+                kw[k] = [self.filter_field(k, vi, window, False) for vi in v]
             else:
-                kw[k] = self.filter_field(k, v, window)
+                kw[k] = self.filter_field(k, v, window, True)
 
         return data_class(**kw)

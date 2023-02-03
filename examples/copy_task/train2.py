@@ -26,13 +26,14 @@ from common_modules.pos_encoding import EmbedWithPos
 from common_modules.transformers import BertRecurrentTransformer, RecurrentTransformerFromBert, \
     BertRecurrentTransformerWithTokenizer, TorchRecurrentTransformer, TorchRecurrentNN
 
-mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
+# mem_transformer = TorchRecurrentTransformer(128, 4, 3, 512, dropout=0.1).cuda()
+mem_transformer = TorchRecurrentNN(128, 3, dropout=0.1).cuda()
 embed = EmbedWithPos(10, 128, 5.0).cuda()
 predictor = Predictor().cuda()
 
 seq_length = 500
-rollout = 50
-state_length = 20
+rollout = 20
+state_length = 6
 writer = SummaryWriter(f"/home/slavic/pomoika/copy_{seq_length}_{time.time()}")
 
 train_loader = DataLoader(CopyTask(10000, 10, seq_length), shuffle=True, batch_size=128)
@@ -86,8 +87,8 @@ memup_iter_eval = MemoryRolloutWithLoss[DataType, PT](
 def eval(i):
 
     print("evaluate")
-    mem_transformer.eval()
-    predictor.eval()
+    # mem_transformer.eval()
+    # predictor.eval()
 
     for x, y in test_loader:
         state2 = torch.zeros(x.shape[0], state_length, 128).cuda()
@@ -102,8 +103,8 @@ def eval(i):
         for name, val in info2["metrics"].items():
             writer.add_scalar(f"eval/{name} last state", val, i)
 
-    mem_transformer.train()
-    predictor.train()
+    # mem_transformer.train()
+    # predictor.train()
 
 
 class ContextCollector(DataCollectorAppend[DataType, Tensor]):
@@ -116,21 +117,6 @@ predictor_loss = PredictorLossWithContext(predictor, [
         LossModule(nn.CrossEntropyLoss(), "CE", 1.0),
         LossModule(AccuracyMetric(), "TAcc", 0.0)
 ], cur_step_loss_coef=1)
-
-
-def take_half(out_seq, out, target):
-    count = sum([int(o.shape[1] > 0) for o in out_seq])
-
-    if count > 1:
-        sample_size = out.shape[1] // count
-        index = torch.multinomial(
-            torch.ones(out.shape[0], out.shape[1], device=out.device) / out.shape[1],
-            sample_size,
-            replacement=False)
-        out, target = select_by_index(index, out), select_by_index(index.cpu(), target)
-
-    return out, target
-
 
 
 for i in range(1000):

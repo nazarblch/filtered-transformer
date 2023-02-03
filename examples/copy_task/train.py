@@ -61,7 +61,7 @@ memup_iter = MemoryRolloutWithLoss[DataType, TOS](
         IncrementStep(),
         NStepUpdate(ContextPreprocessor(MemUpMemoryImpl(embed_acc.get_module(), mem_acc.get_module()), data_filter), 200),
         NStepUpdate(ErrorPreprocessor(pred_acc.get_module(), nn.CrossEntropyLoss(reduction="none"), lambda data: data.y), 200),
-        NStepUpdate(TargetsSampler((10, 10), lambda data: data.y, is_random=False), 4, offset=0)
+        NStepUpdate(TargetsSampler((10, 20), lambda data: data.y, is_random=False), 4, offset=0)
     ]
 )
 
@@ -112,7 +112,12 @@ for i in range(1000):
 
         state = torch.zeros(x.shape[0], state_length, 128).cuda()
         T = x.shape[1]
-        data = DataType(x, y, T)
+
+        with torch.no_grad():
+            _, last_state, _, _ = memup_iter_eval.forward(DataType(x, y, x.shape[1]), state, {}, DataCollectorEval(predictor))
+            _, _, info2, _ = memup_iter_eval.forward(DataType(x, y, x.shape[1]), state, {},
+                                                     DataCollectorEvalWithState(predictor, last_state))
+            print("train eval 1", info2["metrics"])
 
         done = False
         info = {}
@@ -134,4 +139,12 @@ for i in range(1000):
         print(last_info)
         for name, val in last_info.items():
             writer.add_scalar(f"train/{name}", val, i)
+
+        with torch.no_grad():
+            state2 = torch.zeros(x.shape[0], state_length, 128).cuda()
+            _, _, info2, _ = memup_iter_eval.forward(DataType(x, y, x.shape[1]), state2, {},
+                                                     DataCollectorEvalWithState(predictor, state))
+
+            print("train eval 2", info2["metrics"])
+
 

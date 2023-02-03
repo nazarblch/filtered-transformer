@@ -44,6 +44,15 @@ class DataCollector(Generic[SD, CT], ABC):
 
     def result(self, cat_dims: Tuple[int] = (), cat_keys: Tuple[str] = ()):
         assert len(self.collection) > 0
+
+        if isinstance(self.collection[0], OrderedDict):
+            res = self.collection[0].__class__(*[[]] * len(self.collection[0]._fields))
+            for d in self.collection:
+                for k, v in d.items():
+                    v = torch.cat(v) if k in cat_keys else v
+                    res[k].append(v)
+            return res
+
         if isinstance(self.collection[0], (tuple, list)):
             res = list(zip(*self.collection))
             for dim in cat_dims:
@@ -53,13 +62,6 @@ class DataCollector(Generic[SD, CT], ABC):
 
         if isinstance(self.collection[0], dict):
             res = {k: [] for k in self.collection[0].keys()}
-            for d in self.collection:
-                for k, v in d.items():
-                    v = torch.cat(v) if k in cat_keys else v
-                    res[k].append(v)
-            return res
-        if isinstance(self.collection[0], NamedTuple):
-            res = self.collection[0].__class__(*[[]] * len(self.collection[0]._fields))
             for d in self.collection:
                 for k, v in d.items():
                     v = torch.cat(v) if k in cat_keys else v
