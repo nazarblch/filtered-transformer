@@ -28,13 +28,13 @@ train_data, test_data = torch.utils.data.random_split(dataset, [int(len(dataset)
 train_loader = DataLoader(train_data, shuffle=True, batch_size=32)
 test_loader = DataLoader(test_data, shuffle=False, batch_size=256)
 
-rollout = 1000
+rollout = 800
 state_length = 50
 data_filter = SlidingWindowFilterTuple[DataType](rollout, pad_fields={"text"}, padding=200, skip_fields={"target", "length"})
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
-mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, 300, 4, 3, bert_model.config.hidden_size * 2).cuda()
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, 270, 4, 3, bert_model.config.hidden_size * 2).cuda()
 predictor = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
 
 weights = torch.load("/home/slavic/PycharmProjects/promoter.pt")
@@ -42,9 +42,9 @@ mem_transformer.load_state_dict(weights["mem"])
 predictor.load_state_dict(weights["pred"])
 
 opt = torch.optim.Adam([
-    {"params": mem_transformer.bert.parameters(), "lr": 2e-6},
-    {"params": predictor.parameters(), "lr": 1e-5},
-    {"params": mem_transformer.encoder.parameters(), "lr": 1e-5},
+    {"params": mem_transformer.bert.parameters(), "lr": 4e-6},
+    {"params": predictor.parameters(), "lr": 2e-5},
+    {"params": mem_transformer.encoder.parameters(), "lr": 2e-5},
 ])
 
 memup_iter = MemoryRollout[DataType](
@@ -102,7 +102,6 @@ def eval(i):
 
 def train_one_epoch(memup_iter, train_loader, global_step):
 
-    print("epoch", global_step)
     eval(global_step)
 
     last_info = {}
