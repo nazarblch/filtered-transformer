@@ -40,9 +40,9 @@ bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Inst
 mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, 300, 4, 3, bert_model.config.hidden_size * 2).cuda()
 predictor = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
 
-# weights = torch.load("/home/jovyan/PycharmProjects/promoter.pt")
-# mem_transformer.load_state_dict(weights["mem"])
-# predictor.load_state_dict(weights["pred"])
+weights = torch.load("/home/slavic/PycharmProjects/promoter.pt")
+mem_transformer.load_state_dict(weights["mem"])
+predictor.load_state_dict(weights["pred"])
 
 opt = torch.optim.Adam([
     {"params": mem_transformer.bert.parameters(), "lr": 2e-6},
@@ -80,8 +80,8 @@ writer = SummaryWriter(f"/home/slavic/pomoika/promoters_{16000}_{time.time()}")
 def eval(i):
 
     print("evaluate")
-    # mem_transformer.eval()
-    # predictor.eval()
+    mem_transformer.eval()
+    predictor.eval()
 
     n = 0
     for text, labels in test_loader:
@@ -100,8 +100,8 @@ def eval(i):
         if n > 30:
             break
 
-    # mem_transformer.train()
-    # predictor.train()
+    mem_transformer.train()
+    predictor.train()
 
 def train_one_epoch(memup_iter, train_loader, global_step):
 
@@ -138,12 +138,12 @@ def train_one_epoch(memup_iter, train_loader, global_step):
         print(last_info)
 
         for name, val in last_info.items():
-            writer.add_scalar(f"train/{name}", val, i)
+            writer.add_scalar(f"train/{name}", val, global_step)
 
 
 global_step = 0
 
-for i in range(1000):
-    print("epoch", i)
+for it in range(1000):
+    print("epoch", it)
     global_step = train_one_epoch(memup_iter, train_loader, global_step)
 
