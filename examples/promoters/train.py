@@ -15,18 +15,18 @@ from memup.base import MemoryRollout
 from examples.promoters.modules import DataType
 from metrics.accuracy import AccuracyMetric
 
-dataset = Promoters([
+train_data = Promoters([
         "/home/slavic/PycharmProjects/promoters16/fold_1.csv",
         "/home/slavic/PycharmProjects/promoters16/fold_2.csv",
-        "/home/slavic/PycharmProjects/promoters16/fold_3.csv",
-        "/home/slavic/PycharmProjects/promoters16/fold_4.csv",
-        "/home/slavic/PycharmProjects/promoters16/fold_5.csv",
+        "/home/slavic/PycharmProjects/promoters16/fold_3.csv"
 ])
 
-train_data, test_data = torch.utils.data.random_split(dataset, [int(len(dataset) * 0.8), len(dataset) - int(len(dataset) * 0.8)])
+test_data = Promoters([
+        "/home/slavic/PycharmProjects/promoters16/fold_5.csv"
+])
 
 train_loader = DataLoader(train_data, shuffle=True, batch_size=32)
-test_loader = DataLoader(test_data, shuffle=False, batch_size=256)
+test_loader = DataLoader(test_data, shuffle=False, batch_size=512)
 
 rollout = 800
 state_length = 50
@@ -76,9 +76,12 @@ writer = SummaryWriter(f"/home/slavic/pomoika/promoters_{16000}_{time.time()}")
 @torch.no_grad()
 def eval(i):
 
-    print("evaluate")
+    print("evaluate", i, len(test_data))
     mem_transformer.eval()
     predictor.eval()
+
+    all_pred = []
+    all_labels = []
 
     n = 0
     for text, labels in test_loader:
@@ -90,15 +93,20 @@ def eval(i):
         eval_loss.forward(collector, info2)
 
         print(info2["metrics"])
-        for name, val in info2["metrics"].items():
-            writer.add_scalar(f"eval/{name} last state", val, i)
+        all_pred.append(info2["predictions"])
+        all_labels.append(labels)
 
-        n += 1
-        if n > 30:
-            break
+        # n += 1
+        # if n > 30:
+        #     break
+
+    acc = AccuracyMetric()(torch.cat(all_pred, 0), torch.cat(all_labels, 0))
+    print("acc", acc)
+    writer.add_scalar("eval/Accuracy", acc, i)
 
     mem_transformer.train()
     predictor.train()
+
 
 def train_one_epoch(memup_iter, train_loader, global_step):
 
@@ -131,10 +139,12 @@ def train_one_epoch(memup_iter, train_loader, global_step):
             loss.backward()
             opt.step()
 
-        print(last_info)
+        print(global_step, last_info)
 
         for name, val in last_info.items():
             writer.add_scalar(f"train/{name}", val, global_step)
+
+    return global_step
 
 
 global_step = 0

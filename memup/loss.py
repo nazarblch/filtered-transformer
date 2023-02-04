@@ -204,6 +204,7 @@ class EvalLossStateOnly(MemUpLoss):
         s0 = state_seq[-1]
         predictions = self.predictor(s0).cpu()
         info["metrics"] = {}
+        info["predictions"] = predictions
 
         for m in self.metrics:
             val = m(predictions, targets)
