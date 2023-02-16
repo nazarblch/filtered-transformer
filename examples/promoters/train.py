@@ -9,6 +9,8 @@ from data_filters.sliding_window import SlidingWindowFilterTuple
 from examples.promoters.data import Promoters
 from torch.utils.data import Dataset, DataLoader
 import torch
+from metrics.f1 import F1Metric
+from memup.accumulator import Accumulator
 from memup.loss import PredictorLoss, LossModule, PredictorLossStateOnly, EvalLossStateOnly
 from memup.preproc import IncrementStep
 from examples.promoters.modules import MemUpMemoryImpl, DataCollectorTrain, DataCollectorLastState
@@ -38,7 +40,7 @@ bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Inst
 mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, conf.model.max_token_length, 4, 3, bert_model.config.hidden_size * 2).cuda()
 predictor = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
 
-# weights = torch.load("/home/slavic/PycharmProjects/promoter.pt")
+# weights = torch.load("/home/slavic/PycharmProjects/promoter_e_1.pt")
 # mem_transformer.load_state_dict(weights["mem"])
 # predictor.load_state_dict(weights["pred"])
 
@@ -62,14 +64,17 @@ predictor_loss = PredictorLossStateOnly(predictor, [
 ])
 
 
+mem_acc = Accumulator(mem_transformer, decay=0.9)
+pred_acc = Accumulator(predictor, decay=0.9)
+
 memup_iter_eval = MemoryRollout[DataType](
     steps=1000,
-    memory=MemUpMemoryImpl(mem_transformer),
+    memory=MemUpMemoryImpl(mem_acc.get_module()),
     data_filter=data_filter,
     info_update=[IncrementStep()]
 )
 
-eval_loss = EvalLossStateOnly(predictor, [AccuracyMetric()])
+eval_loss = EvalLossStateOnly(pred_acc.get_module(), [AccuracyMetric()])
 
 writer = SummaryWriter(conf.data.logsdir)
 
@@ -78,8 +83,8 @@ writer = SummaryWriter(conf.data.logsdir)
 def eval(i):
 
     print("evaluate", i, len(test_data))
-    mem_transformer.eval()
-    predictor.eval()
+    mem_acc.get_module().eval()
+    pred_acc.get_module().eval()
 
     all_pred = []
     all_labels = []
@@ -97,21 +102,16 @@ def eval(i):
         all_pred.append(info2["predictions"])
         all_labels.append(labels)
 
-        # n += 1
-        # if n > 30:
-        #     break
-
     acc = AccuracyMetric()(torch.cat(all_pred, 0), torch.cat(all_labels, 0))
-    print("acc", acc)
+    f1 = F1Metric()(torch.cat(all_pred, 0), torch.cat(all_labels, 0))
+    print("acc", acc, "f1", f1)
     writer.add_scalar("eval/Accuracy", acc, i)
-
-    mem_transformer.train()
-    predictor.train()
+    writer.add_scalar("eval/F1", f1, i)
 
 
 def train_one_epoch(memup_iter, train_loader, global_step):
 
-    eval(global_step)
+    # eval(global_step)
 
     last_info = {}
 
@@ -130,6 +130,9 @@ def train_one_epoch(memup_iter, train_loader, global_step):
         done = False
         info = {}
 
+        mem_transformer.train()
+        predictor.train()
+
         while not done:
             global_step += 1
             data_collector, state, info, done = memup_iter.forward(DataType(text, labels, T), state, info, DataCollectorTrain())
@@ -144,6 +147,9 @@ def train_one_epoch(memup_iter, train_loader, global_step):
 
         for name, val in last_info.items():
             writer.add_scalar(f"train/{name}", val, global_step)
+
+        mem_acc.accumulate()
+        pred_acc.accumulate()
 
     return global_step
 

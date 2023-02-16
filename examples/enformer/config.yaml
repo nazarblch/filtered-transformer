@@ -1,0 +1,21 @@
+device: "cuda:1"
+data:
+  path: /mnt/nfs_dna/DNALM/downstream_tasks/enformer/human/h5
+  train: human_train.h5
+  test: human_test.h5
+  logsdir: /home/buzun/pomoika/enformer
+  save_path: /home/buzun/enformer.pt
+
+model:
+  batch_size: 20
+  eval_batch_size: 100
+  rec_block_size: 800
+  rec_block_padding: 200
+  max_token_length: 270
+  state_size: 100
+
+
+
+
+
+

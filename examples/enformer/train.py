@@ -1,13 +1,15 @@
 from itertools import chain
 import random
 import time
-from data import EnformerDataset
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import sys
-sys.path.append("/home/buzun/filtered-transformer")
+import os
+sys.path.append(os.getcwd())
+from data import EnformerDataset
 from data_filters.top_errors import InputTarget
+from omegaconf import OmegaConf
 from memup.accumulator import Accumulator 
 from collections import namedtuple
 from typing import Tuple, Optional
@@ -29,20 +31,23 @@ from sklearn.decomposition import PCA
 from modules import  DataCollectorTrain, DataType, MemUpMemoryImpl, PearsonCorrLoss, Predictor, SeqDataFilterImpl
 
 
-train_data = EnformerDataset("/mnt/nfs_dna/DNALM/downstream_tasks/enformer/human/h5/human_train.h5")
+conf = OmegaConf.load(os.path.dirname(__file__) + '/config.yaml')
+
+
+train_data = EnformerDataset(os.path.join(conf.data.path, conf.data.train))
 train_loader = DataLoader(train_data, shuffle=True, batch_size=20)
 
 
-rollout = 800
-state_length = 100
-torch.cuda.set_device("cuda:1")
-data_filter = SeqDataFilterImpl(rollout, padding=200)
+rollout = conf.model.rec_block_size
+state_length = conf.model.state_size
+torch.cuda.set_device(conf.device)
+data_filter = SeqDataFilterImpl(rollout, padding=conf.model.rec_block_padding)
 
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert: BertModel = BertModel.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert.train()
-mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, 270, 4, 4, bert.config.hidden_size * 2).cuda()
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, conf.model.max_token_length, 4, 4, bert.config.hidden_size * 2).cuda()
 
 
 predictor = Predictor(bert).cuda()
@@ -88,7 +93,7 @@ class ContextCollector(DataCollectorAppend[DataType, Tuple[DataType, Tensor]]):
         pass
 
 
-writer = SummaryWriter(f"/home/buzun/pomoika/enformer_{time.time()}")
+writer = SummaryWriter(conf.data.logsdir)
 
 
 def train_one_epoch(memup_iter, train_loader, global_step):
