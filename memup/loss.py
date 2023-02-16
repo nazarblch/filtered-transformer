@@ -46,12 +46,16 @@ class PredictorLoss(MemUpLoss):
 
     def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info) -> Optional[Tensor]:
         target_seq, out_seq, state_seq = collector.result()
-        out, target = torch.cat(out_seq, 1), torch.cat(target_seq, 1)
+
+        count = sum([int(o is not None and o.shape[1] > 0) for o in out_seq])
+        info["losses"] = {}
+        if count == 0:
+            return None
+
+        out, target = torch.cat(list(filter(lambda o: o is not None and o.shape[1] > 0, out_seq)), 1), torch.cat(target_seq, 1)
         s0 = torch.cat(state_seq, 0)
         assert out.shape[1] == target.shape[1]
 
-        info["losses"] = {}
-        count = sum([int(o.shape[1] > 0) for o in out_seq])
         loss = None
 
         if count > 1:

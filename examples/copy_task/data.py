@@ -13,7 +13,7 @@ class CopyTask(Dataset):
     def __len__(self):
         return len(self.trajs)
 
-    def __getitem__(self, i):
+    def __getitem__(self, i: int):
         return self.trajs[i][0], self.trajs[i][1]
 
     def gen_trajectory(self):

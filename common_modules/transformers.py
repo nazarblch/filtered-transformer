@@ -2,12 +2,12 @@ import math
 from copy import deepcopy
 from functools import reduce
 import torch
-from gena_lm.modeling_bert import BertEncoder
+from gena_lm.modeling_bert import BertEncoder, BertModel, BertConfig
 from tokenizers import Tokenizer
 from torch import nn, Tensor
 from torch.nn import TransformerEncoderLayer, TransformerEncoder
 from torch.nn.utils.rnn import pad_sequence
-from transformers import BertModel, BertConfig, PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from typing import Dict, List
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
@@ -113,6 +113,9 @@ class BertRecurrentTransformer(RecurrentTransformer):
         config.intermediate_size = dim_feedforward
 
         self.encoder = BertEncoder(config)
+        self.encoder2 = BertEncoder(config)
+        for i in range(num_layers):
+            self.encoder2.layer[i] = bert.encoder.layer[i]
 
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
         return h['last_hidden_state']
@@ -128,10 +131,15 @@ class BertRecurrentTransformer(RecurrentTransformer):
 
         return RecurrentOutputWithContext(out, new_state, h)
 
+    def forward_bert(self, x: Dict[str, Tensor]) -> Tensor:
+        embed = self.bert.embeddings(x["input_ids"])
+        att = self.bert.get_extended_attention_mask(x['attention_mask'], embed.shape)
+        return self.encoder2.forward(embed, attention_mask=att)['last_hidden_state']
+
 
 class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):
 
-    def __init__(self, bert: BertModel, tokenizer: PreTrainedTokenizer, max_len: int, nhead: int = 4, num_layers: int = 2, dim_feedforward: int = 2048):
+    def __init__(self, bert: BertModel, tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast, max_len: int, nhead: int = 4, num_layers: int = 2, dim_feedforward: int = 2048):
         super().__init__(bert, nhead, num_layers, dim_feedforward)
         self.tokenizer = tokenizer
         self.max_len = max_len
@@ -145,6 +153,15 @@ class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):
         # print(len(text_seq[0]), res["input_ids"].shape)
 
         return super().forward(res, state)
+
+    def forward_bert(self, text_seq: List[str], max_len: int) -> Tensor:
+        for t  in text_seq:
+            assert len(t) > 0
+        res = self.tokenizer(text_seq, max_length=max_len, padding="max_length", return_tensors="pt", truncation=True)
+        res = {k: v.cuda() for k, v  in res.items()}
+
+        return super().forward_bert(res)
+
 
 
 class BertRecurrentLSTM(RecurrentTransformer):
@@ -195,6 +212,28 @@ class RecurrentTransformerFromBert(RecurrentTransformer):
         out = xs[:, : x.shape[1]]
 
         return RecurrentOutput(out, new_state)
+
+
+class DecoderFromBert(nn.Module):
+
+    def __init__(self,
+                 bert: BertModel,
+                 nhead: int = 4,
+                 num_layers: int = 2,
+                 dim_feedforward: int = 2048):
+        super().__init__()
+
+        config: BertConfig = deepcopy(bert.config)
+        config.num_attention_heads = nhead
+        config.num_hidden_layers = num_layers
+        config.intermediate_size = dim_feedforward
+        config.is_decoder = True
+        config.add_cross_attention = True
+
+        self.encoder = BertEncoder(config)
+
+    def forward(self, x: Tensor, state: Tensor) -> Tensor:
+        return self.encoder.forward(x, encoder_hidden_states=state)['last_hidden_state']
 
 
 class HierarchicalTransformer(nn.Module):

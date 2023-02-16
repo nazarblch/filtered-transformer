@@ -1,0 +1,23 @@
+data:
+  path: /home/buzun/promoters16
+  train: 
+    - fold_1.csv 
+    - fold_2.csv
+    - fold_3.csv
+  test: fold_5.csv
+  logsdir: /home/buzun/pomoika/promoters16
+  save_path: /home/buzun/promoters16.pt
+
+model:
+  batch_size: 32
+  eval_batch_size: 512
+  rec_block_size: 800
+  rec_block_padding: 200
+  max_token_length: 270
+  state_size: 50
+
+
+
+
+
+

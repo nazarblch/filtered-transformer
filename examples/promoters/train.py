@@ -1,5 +1,9 @@
 import time
+from omegaconf import OmegaConf
 from torch import nn
+import sys
+import os
+sys.path.append(os.getcwd())
 from torch.utils.tensorboard import SummaryWriter
 from data_filters.sliding_window import SlidingWindowFilterTuple
 from examples.promoters.data import Promoters
@@ -14,32 +18,29 @@ from gena_lm.modeling_bert import BertModel, BertForSequenceClassification
 from memup.base import MemoryRollout
 from examples.promoters.modules import DataType
 from metrics.accuracy import AccuracyMetric
+from absl import flags
 
-train_data = Promoters([
-        "/home/slavic/PycharmProjects/promoters16/fold_1.csv",
-        "/home/slavic/PycharmProjects/promoters16/fold_2.csv",
-        "/home/slavic/PycharmProjects/promoters16/fold_3.csv"
-])
+conf = OmegaConf.load(os.path.dirname(__file__) + '/config.yaml')
 
-test_data = Promoters([
-        "/home/slavic/PycharmProjects/promoters16/fold_5.csv"
-])
 
-train_loader = DataLoader(train_data, shuffle=True, batch_size=32)
-test_loader = DataLoader(test_data, shuffle=False, batch_size=512)
+train_data = Promoters([os.path.join(conf.data.path, f) for f in conf.data.train])
+test_data = Promoters([os.path.join(conf.data.path, conf.data.test)])
 
-rollout = 800
-state_length = 50
-data_filter = SlidingWindowFilterTuple[DataType](rollout, pad_fields={"text"}, padding=200, skip_fields={"target", "length"})
+train_loader = DataLoader(train_data, shuffle=True, batch_size=conf.model.batch_size)
+test_loader = DataLoader(test_data, shuffle=False, batch_size=conf.model.eval_batch_size)
+
+rollout = conf.model.rec_block_size
+state_length = conf.model.state_size
+data_filter = SlidingWindowFilterTuple[DataType](rollout, pad_fields={"text"}, padding=conf.model.rec_block_padding, skip_fields={"target", "length"})
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
-mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, 270, 4, 3, bert_model.config.hidden_size * 2).cuda()
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, conf.model.max_token_length, 4, 3, bert_model.config.hidden_size * 2).cuda()
 predictor = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
 
-weights = torch.load("/home/slavic/PycharmProjects/promoter.pt")
-mem_transformer.load_state_dict(weights["mem"])
-predictor.load_state_dict(weights["pred"])
+# weights = torch.load("/home/slavic/PycharmProjects/promoter.pt")
+# mem_transformer.load_state_dict(weights["mem"])
+# predictor.load_state_dict(weights["pred"])
 
 opt = torch.optim.Adam([
     {"params": mem_transformer.bert.parameters(), "lr": 4e-6},
@@ -70,7 +71,7 @@ memup_iter_eval = MemoryRollout[DataType](
 
 eval_loss = EvalLossStateOnly(predictor, [AccuracyMetric()])
 
-writer = SummaryWriter(f"/home/slavic/pomoika/promoters_{16000}_{time.time()}")
+writer = SummaryWriter(conf.data.logsdir)
 
 
 @torch.no_grad()
@@ -122,7 +123,7 @@ def train_one_epoch(memup_iter, train_loader, global_step):
             torch.save({
                 "mem": mem_transformer.state_dict(),
                 "pred": predictor.state_dict()
-            }, "/home/slavic/PycharmProjects/promoter.pt")
+            }, conf.data.save_path)
 
         state = torch.zeros(labels.shape[0], state_length, bert_model.config.hidden_size, device=torch.device("cuda"))
         T = len(text[0])
