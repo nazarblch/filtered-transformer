@@ -113,6 +113,7 @@ class BertRecurrentTransformer(RecurrentTransformer):
         config.intermediate_size = dim_feedforward
 
         self.encoder = BertEncoder(config)
+        self.encoder.train()
         self.encoder2 = BertEncoder(config)
         for i in range(num_layers):
             self.encoder2.layer[i] = bert.encoder.layer[i]
@@ -234,6 +235,26 @@ class DecoderFromBert(nn.Module):
 
     def forward(self, x: Tensor, state: Tensor) -> Tensor:
         return self.encoder.forward(x, encoder_hidden_states=state)['last_hidden_state']
+
+
+class EncoderFromBert(nn.Module):
+
+    def __init__(self,
+                 bert: BertModel,
+                 nhead: int = 4,
+                 num_layers: int = 2,
+                 dim_feedforward: int = 2048):
+        super().__init__()
+
+        config: BertConfig = deepcopy(bert.config)
+        config.num_attention_heads = nhead
+        config.num_hidden_layers = num_layers
+        config.intermediate_size = dim_feedforward
+        
+        self.encoder = BertEncoder(config)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.encoder.forward(x)['last_hidden_state']
 
 
 class HierarchicalTransformer(nn.Module):

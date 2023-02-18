@@ -24,11 +24,11 @@ from memup.preproc import IncrementStep, select_by_index
 from common_modules.transformers import BertRecurrentTransformerWithTokenizer, BertRecurrentTransformer, RecurrentTransformerFromBert, \
     BertRecurrentTransformerWithTokenizer
 from transformers import AutoTokenizer
-from gena_lm.modeling_bert import BertModel, BertForSequenceClassification
+from gena_lm.modeling_bert import BertModel
 from memup.base import MemoryRollout
 import torch
 from sklearn.decomposition import PCA
-from modules import  DataCollectorTrain, DataType, MemUpMemoryImpl, PearsonCorrLoss, Predictor, SeqDataFilterImpl
+from modules import  DataCollectorTrain, DataType, MemUpMemoryImpl, PearsonCorrLoss, Predictor
 
 
 conf = OmegaConf.load(os.path.dirname(__file__) + '/config.yaml')
@@ -41,13 +41,13 @@ train_loader = DataLoader(train_data, shuffle=True, batch_size=20)
 rollout = conf.model.rec_block_size
 state_length = conf.model.state_size
 torch.cuda.set_device(conf.device)
-data_filter = SeqDataFilterImpl(rollout, padding=conf.model.rec_block_padding)
+data_filter = SlidingWindowFilterTuple[DataType](rollout, pad_fields={"text"}, padding=conf.model.rec_block_padding, skip_fields={"target", "length", "coord"})
 
 
 tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert: BertModel = BertModel.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 bert.train()
-mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, conf.model.max_token_length, 4, 4, bert.config.hidden_size * 2).cuda()
+mem_transformer = BertRecurrentTransformerWithTokenizer(bert, tokenizer, conf.model.max_token_length, 6, 4, bert.config.hidden_size * 2).cuda()
 
 
 predictor = Predictor(bert).cuda()
@@ -60,37 +60,17 @@ opt = torch.optim.Adam([
 ])
 
 memup_iter = MemoryRollout[DataType](
-    steps=2,
+    steps=3,
     memory=MemUpMemoryImpl(mem_transformer),
     data_filter=data_filter,
     info_update=[IncrementStep()]
 )
 
-mem_acc = Accumulator(mem_transformer, decay=0.9)
 
-memup_iter_acc = MemoryRollout[DataType](
-    steps=1000,
-    memory=MemUpMemoryImpl(mem_acc.get_module()),
-    data_filter=data_filter,
-    info_update=[IncrementStep()]
-)
-
-
-predictor_loss = PredictorLossWithContext(predictor, [
+predictor_loss = PredictorLoss(predictor, [
     LossModule(nn.PoissonNLLLoss(log_input=False), "poisson", 1.0),
-    LossModule(PearsonCorrLoss(), "pearson corr", 10.0),
-], cur_step_loss_coef=1)
-
-
-class ContextCollector(DataCollectorAppend[DataType, Tuple[DataType, Tensor]]):
-
-    def append(self, data: DataType, out: MemoryOut, state: State) -> None:
-        if out is not None:
-            # print("append context")
-            self.collection.append((data, state.detach().cpu()))
-
-    def apply(self, data: DataType, out: MemoryOut, state: State) -> None:
-        pass
+    LossModule(PearsonCorrLoss(), "pearson corr", 2.0),
+])
 
 
 writer = SummaryWriter(conf.data.logsdir)
@@ -103,14 +83,13 @@ def train_one_epoch(memup_iter, train_loader, global_step):
         print("step", global_step)
 
         state = torch.zeros(target.shape[0], state_length, bert.config.hidden_size, device=torch.device("cuda"))
-        T = len(text[0])
+        T = len(text[0]) - EnformerDataset.PAD
         done = False
         info = {}
+        T1 = 10
+        target = target[:, 0:T1]
+        coords = coords[:, 0:T1]
 
-        with torch.no_grad():
-            mem_acc.get_module().eval()
-            context_collector, _, _, _ = memup_iter_acc.forward(DataType(text, target, coords, T, []), state, {}, ContextCollector())
-            # print("context", len(context_collector.collection))
             
         mem_transformer.train()
         predictor.train()
@@ -118,24 +97,21 @@ def train_one_epoch(memup_iter, train_loader, global_step):
         while not done:
             global_step += 1
 
-            data_collector, state, info, done = memup_iter.forward(DataType(text, target, coords, T, []), state, info, DataCollectorTrain())
-            
-            index = random.randint(1, len(context_collector.collection)-1)
-            selected_data = context_collector.collection[index][0]
-            selected_state = context_collector.collection[index - 1][1]
+            data_collector, state, info, done = memup_iter.forward(DataType(text, target, coords, T), state, info, DataCollectorTrain())
 
             opt.zero_grad()
-            context, _ = memup_iter.memory.forward(selected_data, selected_state.cuda())
-            loss = predictor_loss.forward(data_collector, info, InputTarget(context, selected_data.target, context.shape[1]))
-            print(info["losses"])
+            _, state_seq = data_collector.result()
+            context = state_seq[-1][:, : T1 * 4]
+            loss, losses = predictor_loss.loss(torch.cat(state_seq), context, target)
+            print(global_step, losses)
             
-            for name, val in info["losses"].items():
+            for name, val in losses.items():
                 writer.add_scalar(f"train/{name}", val, global_step)
 
             loss.backward()
             opt.step()
 
-        mem_acc.accumulate()
+        # mem_acc.accumulate()
 
     return global_step
 
