@@ -44,15 +44,17 @@ class PredictorLoss(MemUpLoss):
 
         return sum_loss, losses
 
-    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info) -> Optional[Tensor]:
+    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info, last_state=None) -> Optional[Tensor]:
         target_seq, out_seq, state_seq = collector.result()
+        state_seq = list(state_seq) + [last_state]
 
         count = sum([int(o is not None and o.shape[1] > 0) for o in out_seq])
         info["losses"] = {}
         if count == 0:
             return None
 
-        out, target = torch.cat(list(filter(lambda o: o is not None and o.shape[1] > 0, out_seq)), 1), torch.cat(target_seq, 1)
+        out = torch.cat(list(filter(lambda o: o is not None and o.shape[1] > 0, out_seq)), 1) 
+        target = torch.cat(list(filter(lambda o: o is not None and o.shape[1] > 0, target_seq)), 1)
         s0 = torch.cat(state_seq, 0)
         assert out.shape[1] == target.shape[1]
 
@@ -66,6 +68,8 @@ class PredictorLoss(MemUpLoss):
                 replacement=False)
             out, target = select_by_index(index, out), select_by_index(index.cpu(), target)
             assert out.shape[1] == sample_size
+            assert sample_size == 14
+            
 
         if count > 0:
             loss, losses = self.loss(s0, out, target)
@@ -131,9 +135,9 @@ class PredictorLossWithContext(PredictorLoss):
         self.context_target_key = context_target_key
         self.cur_step_loss_coef = cur_step_loss_coef
 
-    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info, selected_data: InputTarget = None) -> Tensor:
-        loss1 = super().forward(collector, info)
-        _, out_seq, state_seq = collector.result()
+    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info, selected_data: InputTarget = None, last_state=None) -> Tensor:
+        loss1 = super().forward(collector, info, last_state)
+        _, _, state_seq = collector.result()
         s0 = torch.cat(state_seq, 0)
 
         assert (self.context_selected_key in info and self.context_target_key in info) or selected_data is not None

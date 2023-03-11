@@ -56,6 +56,14 @@ class TopErrorsFilter(SeqDataFilter[InputTarget]):
         errors = self.metric(
             predictions.view(B * T, *predictions.shape[2:]),
             target.view(B * T, *target.shape[2:])
-        ).view(B, T)
+        )
+
+        if len(errors.shape) > 1:
+            errors = errors.mean(dim=list(range(1, len(errors.shape))))
+
+        errors = errors.view(B, T)
+
+        if not torch.all(errors >= 0):
+           errors = errors - errors.min()
 
         return self.sample_data(data.input, errors, target, info), False

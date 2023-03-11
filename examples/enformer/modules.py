@@ -1,3 +1,4 @@
+from copy import deepcopy
 from data import EnformerDataset
 from torch.utils.data import DataLoader
 from collections import namedtuple
@@ -13,6 +14,7 @@ from common_modules.transformers import BertRecurrentTransformerWithTokenizer, B
     BertRecurrentTransformerWithTokenizer
 import torch
 from data_filters.sliding_window import SlidingWindowFilter, SlidingWindowWithPadding
+from gena_lm.modeling_bert import BertPreTrainedModel, BertModel, BertEncoder
 
 
 DataType = namedtuple("DataType", ["text", "target", "coords", "length"])
@@ -45,29 +47,33 @@ class Predictor(nn.Module):
 
     def __init__(self, bert):
         super().__init__()
-        # self.encoder = EncoderFromBert(bert, 4, 3, bert.config.hidden_size * 2)
-        # self.encoder.train()
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(bert.config.hidden_size, 4, bert.config.hidden_size * 2, 0.1, batch_first=True),
-            3
-        )
+        config2 = deepcopy(bert.config)
+        config2.num_attention_heads = 4
+        config2.num_hidden_layers = 3
+        config2.intermediate_size = bert.config.hidden_size * 2
+
+        self.encoder = BertEncoder(config2)
 
         self.head = nn.Sequential(
-            nn.Linear(bert.config.hidden_size * 4, bert.config.hidden_size * 4),
+            nn.Linear(bert.config.hidden_size, bert.config.hidden_size),
             nn.Dropout(0.1),
             nn.ReLU(),
-            nn.Linear(bert.config.hidden_size * 4, 5313)
+            nn.Linear(bert.config.hidden_size, 896),
+            nn.Softplus()
         )
 
     def forward(self, x, state):
         B, D = state.shape[0], state.shape[2]
-        T = x.shape[1] // 4
-        out = self.encoder.forward(state)[:, -4* T:].reshape(B, T, D * 4)
-        return self.head(out).relu()
+        T = x.shape[1]
+        xs = torch.cat([x, state], dim=1)
+        out = self.encoder.forward(xs)['last_hidden_state'][:, :T]
+        return self.head(out)
 
 
 class PearsonCorrLoss(nn.Module):
     def forward(self, x, y, dim=1):
+        x = x.reshape(-1, x.shape[-1])
+        y = y.reshape(-1, y.shape[-1])
         x_centered = x - x.mean(dim=dim, keepdim=True)
         y_centered = y - y.mean(dim=dim, keepdim=True)
         return -nn.functional.cosine_similarity(x_centered, y_centered, dim=dim).mean()
