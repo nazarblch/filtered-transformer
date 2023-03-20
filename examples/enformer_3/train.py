@@ -121,7 +121,7 @@ memup_iter_acc = MemoryRollout[Dict[str, torch.Tensor]](
     info_update=[IncrementStep()]
 )
 
-writer = SummaryWriter("/home/jovyan/pomoika/enformer2.1")
+writer = SummaryWriter("/home/jovyan/pomoika/enformer2.0")
 global_step = 0
 
 

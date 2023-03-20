@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from collections import namedtuple
-from typing import Tuple, Generic, Any, List, Type, Set, get_args
+from typing import Tuple, Generic, Any, List, Type, Set
 import torch
 from memup.base import SeqDataFilter, SD, State, Info, Done
 

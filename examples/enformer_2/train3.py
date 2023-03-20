@@ -21,41 +21,41 @@ from transformers import AutoConfig, AutoTokenizer, HfArgumentParser
 from transformers.optimization import AdamW
 import numpy as np
 from examples.enformer_2.data import EnformerDataset
-from examples.enformer_2.modules import BertForEnformer, ContextCollector, DataCollectorTrain, DataFilter, MemUpMemoryImpl, Predictor
+from examples.enformer_2.modules import BertForEnformer, ContextCollector, DataCollectorTrain, DataFilter, MemUpMemoryImpl, MemUpMemoryRMT, Predictor
 from gena_lm.modeling_bert import BertPreTrainedModel, BertModel
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.tensorboard import SummaryWriter
+from common_modules.rmt import RecurrentTransformerWithStateEmbedding
 
 
 torch.cuda.set_device("cuda:0")
 
-tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
-# bert: BertModel = BertModel.from_pretrained('AIRI-Institute/gena-lm-bert-base')
-model_cfg = AutoConfig.from_pretrained('AIRI-Institute/gena-lm-bert-base')
+tokenizer = AutoTokenizer.from_pretrained('/home/jovyan/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/')
+model_cfg = AutoConfig.from_pretrained('/home/jovyan/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json')
 model_cfg.num_labels = EnformerDataset.TG_COUNT
-model = BertForEnformer(config=model_cfg)
-# weights = bert.state_dict()
-# weights.pop("pooler.dense.weight")
-# weights.pop("pooler.dense.bias")
-# model.bert.load_state_dict(weights)
+enformer_bert = BertForEnformer(config=model_cfg)
 
-model = model.cuda()
-model.train()
+# weights = torch.load("/home/jovyan/model_best.pth", map_location="cpu")
+# enformer_bert.load_state_dict(weights["model_state_dict"], strict=False)
+
+rmt = RecurrentTransformerWithStateEmbedding(enformer_bert.base_model, 200, tokenizer)
+
+rmt = rmt.cuda()
+rmt.train()
 
 predictor = Predictor(model_cfg).cuda()
 predictor.train()
 
-weights = torch.load("/home/jovyan/enformer_1.pt", map_location="cpu")
-model.load_state_dict(weights["mem"])
-predictor.load_state_dict(weights["pred"])
+weights = torch.load("/home/jovyan/enformer_4.pt", map_location="cpu")
+rmt.load_state_dict(weights["mem_acc"])
+predictor.load_state_dict(weights["pred_acc"])
+
 
 optimizer = AdamW([
-    {"params": model.bert.parameters(), "lr": 3e-5},
-    {"params": model.encoder.parameters(), "lr": 3e-5},
-    {"params": predictor.parameters(), "lr": 3e-5},
+    {"params": rmt.parameters(), "lr": 5e-5},
+    {"params": predictor.parameters(), "lr": 5e-5},
 ] , weight_decay=1e-5)
 
-print("pad token id", tokenizer.pad_token_id)
 
 def collate_fn(batch):
     pad_token_ids = {'input_ids': tokenizer.pad_token_id, 'token_type_ids': 0, 'attention_mask': 0, 'bins_mask': 0, 'labels': 0}
@@ -70,6 +70,8 @@ def collate_fn(batch):
                 batch_first=True, 
                 padding_value=pad_token_ids[k]
             )
+            if name == "center":
+                padded_batch[k] = padded_batch[k][:, 1:]  
 
         return padded_batch
 
@@ -91,13 +93,13 @@ train_dataset = EnformerDataset(tokenizer, data_path)
 
 print(f'len(train_dataset): {len(train_dataset)}')
 
-train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=30, pin_memory=True, num_workers=6, collate_fn=collate_fn)
+train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=32, pin_memory=True, num_workers=8, collate_fn=collate_fn)
 
-data_filter = DataFilter(512)
+data_filter = DataFilter(310)
 
 memup_iter = MemoryRollout[Dict[str, torch.Tensor]](
-    steps=2,
-    memory=MemUpMemoryImpl(model),
+    steps=3,
+    memory=MemUpMemoryRMT(rmt),
     data_filter=data_filter,
     info_update=[IncrementStep()]
 )
@@ -109,30 +111,33 @@ predictor_loss = PredictorLossWithContext(predictor, [
 ], cur_step_loss_coef=1)
 
 
-mem_acc = Accumulator(model, decay=0.9)
+mem_acc = Accumulator(rmt, decay=0.9)
 pred_acc = Accumulator(predictor, decay=0.9)
 
 errors_filter = TopErrorsFilter(28, (25, 35), pred_acc, nn.PoissonNLLLoss(log_input=False, reduction="none"), is_random=True)
 
 memup_iter_acc = MemoryRollout[Dict[str, torch.Tensor]](
     steps=1000,
-    memory=MemUpMemoryImpl(mem_acc),
+    memory=MemUpMemoryRMT(mem_acc.get_module()),
     data_filter=data_filter,
     info_update=[IncrementStep()]
 )
 
-writer = SummaryWriter("/home/jovyan/pomoika/enformer2.1")
+writer = SummaryWriter("/home/jovyan/pomoika/enformer4.0")
 global_step = 0
 
 
 for _ in range(10):
 
     for it, batch in enumerate(train_dataloader):
+
+        rmt.train()
+        predictor.train()
         
         info = {}
         done = False
         print()
-        state = torch.zeros(batch["center"]["labels"].shape[0], 200, model_cfg.hidden_size, device=torch.device("cuda:0"))
+        state = rmt.init_state(batch["center"]["labels"].shape[0])
 
         with torch.no_grad():
             context_collector, last_state, _, _ = memup_iter_acc.forward(batch, state, {}, ContextCollector())
@@ -176,11 +181,11 @@ for _ in range(10):
 
             if global_step % 1000 == 0:
                     torch.save({
-                        "mem": model.state_dict(),
+                        "mem": rmt.state_dict(),
                         "pred": predictor.state_dict(),
                         "mem_acc": mem_acc.get_module().state_dict(),
                         "pred_acc": pred_acc.get_module().state_dict()
-                    }, "/home/jovyan/enformer_1.pt")
+                    }, "/home/jovyan/enformer_4.pt")
 
         mem_acc.accumulate()
         pred_acc.accumulate()

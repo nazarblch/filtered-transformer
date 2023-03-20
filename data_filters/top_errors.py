@@ -45,7 +45,8 @@ class TopErrorsFilter(SeqDataFilter[InputTarget]):
         while not done:
             info2 = increment_step.forward(data, state, info2)
             filtered_data, done = self.window_filter.forward(data, state, info2)
-            pred = self.predictor(filtered_data.input.cuda(), state).cpu()
+            mask = torch.ones(filtered_data.input.shape[:2], dtype=torch.bool).cuda()
+            pred = self.predictor(filtered_data.input.cuda(), state, mask).cpu()
             predictions.append(pred)
 
         predictions = torch.cat(predictions, 1)
