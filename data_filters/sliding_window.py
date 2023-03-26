@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from collections import namedtuple
-from typing import Tuple, Generic, Any, List, Type, Set
+from typing import Dict, Tuple, Generic, Any, List, Type, Set
+from torch import Tensor
 import torch
 from memup.base import SeqDataFilter, SD, State, Info, Done
 
@@ -21,7 +22,7 @@ class SlidingWindowFilter(SeqDataFilter[SD], ABC):
 
     def forward(self, data: SD, state: State, info: Info, *args) -> Tuple[SD, Done]:
         BS = self.window_size
-        T = data.length
+        T = data["length"] if isinstance(data, dict) else data.length
         assert "step" in info
         step = info["step"]
         assert step * BS < T
@@ -73,3 +74,38 @@ class SlidingWindowFilterTuple(Generic[SD], SlidingWindowFilter[SD]):
                 kw[k] = self.filter_field(k, v, window, True)
 
         return data_class(**kw)
+    
+
+
+class SlidingWindowFilterDict(SlidingWindowFilter[Dict[str, Any]]):
+
+    def __init__(self, size: int, padding: int, pad_fields: Set[str] = set(), skip_fields: Set[str] = set()):
+        super().__init__(size, padding)
+        self.pad_fields = pad_fields
+        self.skip_fields = skip_fields
+
+    def filter_field(self, k, v, window: SlidingWindowWithPadding, has_batch: bool):
+        i1, i2, i1_pad, i2_pad = window
+
+        if k in self.pad_fields:
+            v = v[:, i1_pad: i2_pad] if has_batch else v[i1_pad: i2_pad]
+        elif k in self.skip_fields:
+            v = v
+        else:
+            v = v[:, i1: i2] if has_batch else v[i1: i2]
+
+        return v
+
+    def filter_data(self, data: Dict[str, Any], window: SlidingWindowWithPadding) -> Dict[str, Any]:
+
+        kw = {}
+
+        for k, v in data.items():
+            if isinstance(v, (list, tuple)):
+                kw[k] = [self.filter_field(k, vi, window, False) for vi in v]
+            else:
+                kw[k] = self.filter_field(k, v, window, True)
+                if isinstance(kw[k], Tensor):
+                    kw[k] = kw[k].cuda()
+
+        return kw

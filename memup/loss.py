@@ -4,7 +4,7 @@ from typing import List, Callable, Optional
 import torch
 from torch import nn, Tensor
 
-from data_filters.top_errors import InputTarget
+from data_filters.top_errors import InputTarget, InputTargetMask
 from memup.base import MemUpLoss, SDWithMemory, Info, SD, DataCollector, DataCollectorAppend, DataCollectorReplace
 from memup.preproc import select_by_index
 from metrics.base import Metric
@@ -28,6 +28,7 @@ class PredictorLoss(MemUpLoss):
 
     def loss(self, state, out, target, mask):
         target = target.cuda()
+        mask = mask.cuda()
         N = state.shape[0] // target.shape[0]
         out = torch.cat([out] * N, 0)
         target = torch.cat([target] * N, 0)
@@ -47,6 +48,8 @@ class PredictorLoss(MemUpLoss):
         return sum_loss, losses
 
     def forward(self, collector: DataCollectorAppend[SD, TOSM], info: Info, last_state=None) -> Optional[Tensor]:
+        if len(collector.collection) == 0:
+            return None
         target_seq, out_seq, state_seq, mask_seq = collector.result()
         state_seq = list(state_seq) + [last_state]
 
@@ -139,7 +142,7 @@ class PredictorLossWithContext(PredictorLoss):
         self.context_target_key = context_target_key
         self.cur_step_loss_coef = cur_step_loss_coef
 
-    def forward(self, collector: DataCollectorAppend[SD, TOSM], info: Info, selected_data: InputTarget = None, last_state=None) -> Tensor:
+    def forward(self, collector: DataCollectorAppend[SD, TOSM], info: Info, selected_data: InputTargetMask = None, last_state=None) -> Tensor:
         loss1 = super().forward(collector, info, last_state)
         _, _, state_seq, _ = collector.result()
         s0 = torch.cat(state_seq, 0)
@@ -149,9 +152,11 @@ class PredictorLossWithContext(PredictorLoss):
 
         context_target = info[self.context_target_key] if selected_data is None else selected_data.target
         assert context.shape[1] == context_target.shape[1]
-        mask = torch.ones(context.shape[:2], device=context.device, dtype=torch.bool)
+        # mask = torch.ones(context.shape[:2], device=context.device, dtype=torch.bool)
+        mask = selected_data.mask
         loss, losses = self.loss(s0, context, context_target, mask)
-        if loss1 is not None:
+
+        if loss1 is not None and not torch.isnan(loss1):
             loss = (loss + loss1 * self.cur_step_loss_coef) / 2
         for name, l in losses.items():
             info["losses"][f"{name} selected"] = l

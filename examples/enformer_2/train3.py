@@ -35,10 +35,10 @@ model_cfg = AutoConfig.from_pretrained('/home/jovyan/filtered-transformer/data/c
 model_cfg.num_labels = EnformerDataset.TG_COUNT
 enformer_bert = BertForEnformer(config=model_cfg)
 
-# weights = torch.load("/home/jovyan/model_best.pth", map_location="cpu")
-# enformer_bert.load_state_dict(weights["model_state_dict"], strict=False)
+weights = torch.load("/home/jovyan/model_best.pth", map_location="cpu")
+enformer_bert.load_state_dict(weights["model_state_dict"], strict=False)
 
-rmt = RecurrentTransformerWithStateEmbedding(enformer_bert.base_model, 200, tokenizer)
+rmt = RecurrentTransformerWithStateEmbedding(enformer_bert.base_model, 50, tokenizer)
 
 rmt = rmt.cuda()
 rmt.train()
@@ -46,14 +46,14 @@ rmt.train()
 predictor = Predictor(model_cfg).cuda()
 predictor.train()
 
-weights = torch.load("/home/jovyan/enformer_4.pt", map_location="cpu")
-rmt.load_state_dict(weights["mem_acc"])
-predictor.load_state_dict(weights["pred_acc"])
+# weights = torch.load("/home/jovyan/enformer_4.pt", map_location="cpu")
+# rmt.load_state_dict(weights["mem_acc"])
+# predictor.load_state_dict(weights["pred_acc"])
 
 
 optimizer = AdamW([
-    {"params": rmt.parameters(), "lr": 5e-5},
-    {"params": predictor.parameters(), "lr": 5e-5},
+    {"params": rmt.parameters(), "lr": 1e-4},
+    {"params": predictor.parameters(), "lr": 1e-4},
 ] , weight_decay=1e-5)
 
 
@@ -95,7 +95,7 @@ print(f'len(train_dataset): {len(train_dataset)}')
 
 train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=32, pin_memory=True, num_workers=8, collate_fn=collate_fn)
 
-data_filter = DataFilter(310)
+data_filter = DataFilter(460)
 
 memup_iter = MemoryRollout[Dict[str, torch.Tensor]](
     steps=3,
@@ -123,7 +123,7 @@ memup_iter_acc = MemoryRollout[Dict[str, torch.Tensor]](
     info_update=[IncrementStep()]
 )
 
-writer = SummaryWriter("/home/jovyan/pomoika/enformer4.0")
+writer = SummaryWriter("/home/jovyan/pomoika/enformer5.0")
 global_step = 0
 
 
@@ -185,7 +185,7 @@ for _ in range(10):
                         "pred": predictor.state_dict(),
                         "mem_acc": mem_acc.get_module().state_dict(),
                         "pred_acc": pred_acc.get_module().state_dict()
-                    }, "/home/jovyan/enformer_4.pt")
+                    }, "/home/jovyan/enformer_5.pt")
 
         mem_acc.accumulate()
         pred_acc.accumulate()
