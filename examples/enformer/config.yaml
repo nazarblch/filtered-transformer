@@ -12,7 +12,7 @@ model:
   rec_block_size: 800
   rec_block_padding: 200
   max_token_length: 270
-  state_size: 120
+  state_size: 100
 
 
 

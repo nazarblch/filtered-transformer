@@ -4,13 +4,14 @@ from typing import List, Callable, Optional
 import torch
 from torch import nn, Tensor
 
-from data_filters.top_errors import InputTarget
+from data_filters.top_errors import InputTarget, InputTargetMask
 from memup.base import MemUpLoss, SDWithMemory, Info, SD, DataCollector, DataCollectorAppend, DataCollectorReplace
 from memup.preproc import select_by_index
 from metrics.base import Metric
 
 LossModule = namedtuple("LossModule", ["module", "name", "coefficient"])
 TOS = namedtuple("TOS", ["target", "out", "state"])
+TOSM = namedtuple("TOS", ["target", "out", "state", "mask"])
 TS = namedtuple("TS", ["target", "state"])
 PT = namedtuple("PT", ["prediction", "target"])
 
@@ -25,36 +26,44 @@ class PredictorLoss(MemUpLoss):
         self.predictor = predictor
         self.loss_modules = loss_modules
 
-    def loss(self, state, out, target):
+    def loss(self, state, out, target, mask):
         target = target.cuda()
+        mask = mask.cuda()
         N = state.shape[0] // target.shape[0]
         out = torch.cat([out] * N, 0)
         target = torch.cat([target] * N, 0)
-        pred = self.predictor(out, state)
+        mask = torch.cat([mask] * N, 0)
+        pred = self.predictor(out, state, mask)
 
         losses = {}
         sum_loss = 0
 
-        B, T = pred.shape[0], pred.shape[1]
+        # B, T = pred.shape[0], pred.shape[1]
 
         for m in self.loss_modules:
-            loss_item = m.module(pred.view(B * T, *pred.shape[2:]), target.view(B * T, *target.shape[2:]))
+            loss_item = m.module(pred[mask], target[mask])
             sum_loss = sum_loss + loss_item * m.coefficient
             losses[m.name] = loss_item.item()
 
         return sum_loss, losses
 
-    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info) -> Optional[Tensor]:
-        target_seq, out_seq, state_seq = collector.result()
+    def forward(self, collector: DataCollectorAppend[SD, TOSM], info: Info, last_state=None) -> Optional[Tensor]:
+        if len(collector.collection) == 0:
+            return None
+        target_seq, out_seq, state_seq, mask_seq = collector.result()
+        state_seq = list(state_seq) + [last_state]
 
         count = sum([int(o is not None and o.shape[1] > 0) for o in out_seq])
         info["losses"] = {}
         if count == 0:
             return None
 
-        out, target = torch.cat(list(filter(lambda o: o is not None and o.shape[1] > 0, out_seq)), 1), torch.cat(target_seq, 1)
+        out = torch.cat(list(filter(lambda o: o is not None and o.shape[1] > 0, out_seq)), 1) 
+        target = torch.cat(list(filter(lambda o: o is not None and o.shape[1] > 0, target_seq)), 1)
+        mask = torch.cat(list(filter(lambda o: o is not None and o.shape[1] > 0, mask_seq)), 1)
         s0 = torch.cat(state_seq, 0)
         assert out.shape[1] == target.shape[1]
+        assert out.shape[1] == mask.shape[1]
 
         loss = None
 
@@ -64,11 +73,13 @@ class PredictorLoss(MemUpLoss):
                 torch.ones(out.shape[0], out.shape[1], device=out.device) / out.shape[1],
                 sample_size,
                 replacement=False)
-            out, target = select_by_index(index, out), select_by_index(index.cpu(), target)
+            out, target, mask = select_by_index(index, out), select_by_index(index, target), select_by_index(index, mask)
             assert out.shape[1] == sample_size
+            # assert sample_size == 14
+            
 
         if count > 0:
-            loss, losses = self.loss(s0, out, target)
+            loss, losses = self.loss(s0, out, target, mask)
             info["losses"]["sum loss"] = loss.item()
             for name, l in losses.items():
                 info["losses"][name] = l
@@ -131,9 +142,9 @@ class PredictorLossWithContext(PredictorLoss):
         self.context_target_key = context_target_key
         self.cur_step_loss_coef = cur_step_loss_coef
 
-    def forward(self, collector: DataCollectorAppend[SD, TOS], info: Info, selected_data: InputTarget = None) -> Tensor:
-        loss1 = super().forward(collector, info)
-        _, out_seq, state_seq = collector.result()
+    def forward(self, collector: DataCollectorAppend[SD, TOSM], info: Info, selected_data: InputTargetMask = None, last_state=None) -> Tensor:
+        loss1 = super().forward(collector, info, last_state)
+        _, _, state_seq, _ = collector.result()
         s0 = torch.cat(state_seq, 0)
 
         assert (self.context_selected_key in info and self.context_target_key in info) or selected_data is not None
@@ -141,8 +152,11 @@ class PredictorLossWithContext(PredictorLoss):
 
         context_target = info[self.context_target_key] if selected_data is None else selected_data.target
         assert context.shape[1] == context_target.shape[1]
-        loss, losses = self.loss(s0, context, context_target)
-        if loss1 is not None:
+        # mask = torch.ones(context.shape[:2], device=context.device, dtype=torch.bool)
+        mask = selected_data.mask
+        loss, losses = self.loss(s0, context, context_target, mask)
+
+        if loss1 is not None and not torch.isnan(loss1):
             loss = (loss + loss1 * self.cur_step_loss_coef) / 2
         for name, l in losses.items():
             info["losses"][f"{name} selected"] = l

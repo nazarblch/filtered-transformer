@@ -1,5 +1,5 @@
 data:
-  path: /home/jovyan/promoters22
+  path: /home/buzun/promoters2
   train: 
     - fold_1.csv 
     - fold_2.csv
@@ -7,13 +7,12 @@ data:
   test: fold_5.csv
   logsdir: /home/jovyan/pomoika/promoters223
   save_path: /home/jovyan/promoters223.pt
-
 model:
   batch_size: 128
   eval_batch_size: 512
-  rec_block_size: 200
-  rec_block_padding: 50
-  max_token_length: 90
+  rec_block_size: 400
+  rec_block_padding: 100
+  max_token_length: 140
   state_size: 50
 
 

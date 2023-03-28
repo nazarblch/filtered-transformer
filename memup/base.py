@@ -77,7 +77,9 @@ class DataCollector(Generic[SD, CT], ABC):
 
 class DataCollectorAppend(DataCollector[SD, CT], ABC):
     def append(self, data: SD, out: MemoryOut, state: State) -> None:
-        self.collection.append(self.apply(data, out, state))
+        res = self.apply(data, out, state)
+        if res is not None:
+            self.collection.append(res)
 
 
 class DataCollectorReplace(DataCollector[SD, CT], ABC):
