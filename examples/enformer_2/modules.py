@@ -24,8 +24,8 @@ class DataFilter(SeqDataFilter[Dict[str, Tensor]]):
         super().__init__()
         self.center_step = step
         self.context_step = step
-        pos_encoder = PositionalEncoding2(768 * 2, 0, 896)
-        self.positions = pos_encoder.forward(torch.zeros(1, 896, 768 * 2)).cuda()
+        pos_encoder = PositionalEncoding2(768, 0, 896)
+        self.positions = pos_encoder.forward(torch.zeros(1, 896, 768)).cuda()
 
     @torch.no_grad()
     def forward(self, data: Dict[str, Dict[str, Tensor]], state: State, info: Info, *args) -> Tuple[Dict[str, Tensor], Done]:
@@ -78,7 +78,7 @@ class DataFilter(SeqDataFilter[Dict[str, Tensor]]):
         for i in range(cusum.shape[0]):
             i1 = info["batch_step"][i].item()
             i2 =  min(896, i1 + 3)
-            mask = (cusum[i] > i1 * 2) * (cusum[i] < i2 * 2) + (cusum[i] == i2 * 2) * data['bins_mask'][i] * (i1 < i2) + (cusum[i] == i1 * 2) * (data['bins_mask'][i] == False) * (i1 < i2)
+            mask = (cusum[i] > i1) * (cusum[i] < i2) + (cusum[i] == i2) * data['bins_mask'][i] * (i1 < i2) + (cusum[i] == i1) * (data['bins_mask'][i] == False) * (i1 < i2)
             mask_bk = mask
 
             assert mask.type(torch.int32).sum() < self.center_step
@@ -86,7 +86,7 @@ class DataFilter(SeqDataFilter[Dict[str, Tensor]]):
             while i2 < 896 and mask.type(torch.int32).sum() < self.center_step:
                 i2 += 1
                 mask_bk = mask
-                mask = (cusum[i] > i1 * 2) * (cusum[i] < i2 * 2) + (cusum[i] == i2 * 2) * data['bins_mask'][i] + (cusum[i] == i1 * 2) * (data['bins_mask'][i] == False) 
+                mask = (cusum[i] > i1) * (cusum[i] < i2) + (cusum[i] == i2) * data['bins_mask'][i] + (cusum[i] == i1) * (data['bins_mask'][i] == False) 
                 
             if mask.type(torch.int32).sum() > self.center_step:
                 mask = mask_bk
@@ -94,10 +94,10 @@ class DataFilter(SeqDataFilter[Dict[str, Tensor]]):
 
             info["batch_step"][i] = i2
 
-            if data['bins_mask'][i][mask].type(torch.int32).sum().item() != 2 * (i2 - i1):
-                print(i1, i2, 2 * (i2 - i1), data['bins_mask'][i][mask].type(torch.int32).sum().item(), mask.type(torch.int32).sum())
+            if data['bins_mask'][i][mask].type(torch.int32).sum().item() != (i2 - i1):
+                print(i1, i2, (i2 - i1), data['bins_mask'][i][mask].type(torch.int32).sum().item(), mask.type(torch.int32).sum())
 
-            assert data['bins_mask'][i][mask].type(torch.int32).sum().item() == 2 * (i2 - i1)
+            assert data['bins_mask'][i][mask].type(torch.int32).sum().item() == (i2 - i1)
 
             for k in feature_keys:
                 new_data[k].append(data[k][i][mask])
@@ -130,10 +130,11 @@ class BertForEnformer(BertPreTrainedModel):
 
     _keys_to_ignore_on_load_unexpected = [r"pooler"]
 
-    def __init__(self, config):
+    def __init__(self, config, tokenizer):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
+        self.tokenizer = tokenizer
 
         self.bert = BertModel(config, add_pooling_layer=False)
         self.bert.train()
@@ -152,9 +153,9 @@ class BertForEnformer(BertPreTrainedModel):
     def forward(
         self,
         state,
-        input_ids=None,
-        attention_mask=None,
-        token_type_ids=None,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        token_type_ids: Tensor,
         bins_mask=None,
         position_ids=None,
         head_mask=None,
@@ -166,11 +167,13 @@ class BertForEnformer(BertPreTrainedModel):
         return_dict=None,
         positions=None
     ):
-        r"""
-        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels for computing the token classification loss. Indices should be in `[0, ..., config.num_labels - 1]`.
-        """
+       
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        prefix = torch.tensor([self.tokenizer.cls_token_id]).cuda()[None, :].repeat(input_ids.shape[0], 1) 
+        input_ids = torch.cat([prefix, input_ids], 1)
+        attention_mask = torch.cat([torch.ones_like(prefix), attention_mask], dim=1)
+        token_type_ids = torch.cat([torch.zeros_like(prefix), token_type_ids], dim=1)        
 
         outputs = self.bert(
             input_ids,
@@ -184,19 +187,18 @@ class BertForEnformer(BertPreTrainedModel):
             return_dict=return_dict,
         )
 
-        h = outputs[0]
+        h = outputs[0][:, 1:]
 
         hs = torch.cat([h, state], dim=1)
         hs = self.encoder(hs)['last_hidden_state']
         new_state = hs[:, h.shape[1]:]
         out = hs[:, : h.shape[1]]
 
-        empty_mask = attention_mask.type(torch.int32).sum(1)
+        empty_mask = attention_mask[:, 1:].type(torch.int32).sum(1)
         new_state[empty_mask == 0] = state[empty_mask == 0]
 
         return out, h, bins_mask, new_state
     
-
 
 class MemUpMemoryImpl(MemUpMemory):
 
@@ -208,15 +210,13 @@ class MemUpMemoryImpl(MemUpMemory):
         out, hidden, bins_mask, new_state = self.mem_tr.forward(state, **data)
 
         if bins_mask is not None:
-            lens = bins_mask.type(torch.int32).sum(1) / 2
+            lens = bins_mask.type(torch.int32).sum(1)
             lens = lens.cpu().type(torch.int32).numpy().tolist()
             B, D = out.shape[0], out.shape[-1]
-            padded_hidden = pad_sequence(torch.split(hidden[bins_mask].reshape(-1, D * 2), lens), batch_first=True)
-            # print(padded_hidden.shape, data["labels"].shape, data["positions"].shape, data["input_ids"].shape)
             bins_output = torch.cat([
                 data["positions"],
-                pad_sequence(torch.split(hidden[bins_mask].reshape(-1, D * 2), lens), batch_first=True),
-                pad_sequence(torch.split(out[bins_mask].reshape(-1, D * 2), lens), batch_first=True)
+                pad_sequence(torch.split(hidden[bins_mask].reshape(-1, D), lens), batch_first=True),
+                pad_sequence(torch.split(out[bins_mask].reshape(-1, D), lens), batch_first=True)
             ], dim=-1)
             return bins_output, new_state
         else:
@@ -236,12 +236,12 @@ class MemUpMemoryRMT(MemUpMemory):
         out, new_state = bert_out.out, bert_out.state
 
         if bins_mask is not None:
-            lens = bins_mask.type(torch.int32).sum(1) / 2
+            lens = bins_mask.type(torch.int32).sum(1)
             lens = lens.cpu().type(torch.int32).numpy().tolist()
             B, D = out.shape[0], out.shape[-1]
             bins_output = torch.cat([
                 data["positions"],
-                pad_sequence(torch.split(out[bins_mask].reshape(-1, D * 2), lens), batch_first=True)
+                pad_sequence(torch.split(out[bins_mask].reshape(-1, D), lens), batch_first=True)
             ], dim=-1)
             return bins_output, new_state
         else:
@@ -269,22 +269,24 @@ class ContextCollector(DataCollectorAppend[Dict[str, Tensor], Tensor]):
 
 class Predictor(nn.Module):
 
-    def __init__(self, bert_config):
+    def __init__(self, bert_config, mult=3):
         super().__init__()
         config2 = deepcopy(bert_config)
+        config2.hidden_size = bert_config.hidden_size * mult
         config2.num_attention_heads = 4
-        config2.num_hidden_layers = 2
-        config2.intermediate_size = bert_config.hidden_size * 2
+        config2.num_hidden_layers = 4
+        config2.intermediate_size = bert_config.hidden_size * mult * 2
 
         self.encoder = BertEncoder(config2)
         self.config = config2
+        self.mult = mult
 
         self.head = nn.Sequential(
             nn.Dropout(0.1),
-            nn.Linear(bert_config.hidden_size * 2, bert_config.hidden_size * 2),
+            nn.Linear(bert_config.hidden_size * mult, bert_config.hidden_size * mult),
             nn.Dropout(0.1),
             nn.ReLU(),
-            nn.Linear(bert_config.hidden_size * 2, 5313),
+            nn.Linear(bert_config.hidden_size * mult, 5313),
             nn.Softplus()
         )
 
@@ -312,11 +314,13 @@ class Predictor(nn.Module):
     def forward(self, x, state, mask):
         B, D = state.shape[0], state.shape[2]
         T = x.shape[1]
-        mult = x.shape[2] // D
-        extended_mask = mask[:, :, None].expand(*mask.shape, mult).reshape(B, T * mult).type(torch.int32)
+        # mult = x.shape[2] // D
+        # extended_mask = mask[:, :, None].expand(*mask.shape, mult).reshape(B, T * mult).type(torch.int32)
+        extended_mask = mask
+        state_3 = torch.cat([state] * self.mult, -1)
         state_mask = torch.ones(state.shape[:2], dtype=torch.int32, device=state.device)
         extended_mask = torch.cat([extended_mask, state_mask], dim=1)
-        xs = torch.cat([x.reshape(B, T * mult, D), state], dim=1)
+        xs = torch.cat([x, state_3], dim=1)
         extended_mask = self.get_extended_attention_mask(extended_mask, xs.shape)
-        out = self.encoder.forward(xs, attention_mask=extended_mask)['last_hidden_state'][:, 1:T*mult:mult//2].reshape(B, T, D * 2)
+        out = self.encoder.forward(xs, attention_mask=extended_mask)['last_hidden_state'][:, :T]
         return self.head(out)

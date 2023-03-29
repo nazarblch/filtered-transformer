@@ -11,6 +11,7 @@ class EnformerDataset(Dataset):
     BINS_COUNT = 896
     BIN_SIZE = 128
     PAD = (196608 - BIN_SIZE * BINS_COUNT) // 2
+    BLOCK_SIZE = 510
 
     def __init__(self, tokenizer, path: str, remove_context=True):
         self.h5_file = h5py.File(path, "r")
@@ -42,9 +43,8 @@ class EnformerDataset(Dataset):
         encoded_bins = self.tokenizer.batch_encode_plus(bins_seq, add_special_tokens=False, return_attention_mask=False,
                                                         return_token_type_ids=False)['input_ids']
 
-        # CLS left SEP bin_1 SEP bin_2 SEP bin_3 SEP ... bin_n SEP right SEP
         sep = self.tokenizer.sep_token_id
-        sample_token_ids = [self.tokenizer.cls_token_id] + reduce(lambda b1, b2: b1 + b2, [b + [sep]*2 for b in encoded_bins])
+        sample_token_ids = reduce(lambda b1, b2: b1 + b2, [b + [sep] for b in encoded_bins])
         sample_token_ids = np.array(sample_token_ids)
 
         token_type_ids = np.array([0] * len(sample_token_ids))
@@ -59,6 +59,11 @@ class EnformerDataset(Dataset):
         
         left_inputs = self.tokenizer.batch_encode_plus([left], add_special_tokens=False, return_attention_mask=False, return_token_type_ids=False)['input_ids'][0]
         right_inputs = self.tokenizer.batch_encode_plus([right], add_special_tokens=False, return_attention_mask=False, return_token_type_ids=False)['input_ids'][0]
+        BS = EnformerDataset.BLOCK_SIZE
+        left_inputs = reduce(lambda b1, b2: b1 + b2,
+                             [left_inputs[k:k+BS] + [sep] for k in range(0, len(left_inputs), BS)])
+        right_inputs = reduce(lambda b1, b2: b1 + b2,
+                             [right_inputs[k:k+BS] + [sep] for k in range(0, len(right_inputs), BS)])
 
         left_dict = {'input_ids': np.array(left_inputs),
                      'token_type_ids': np.array([0] * len(left_inputs)),

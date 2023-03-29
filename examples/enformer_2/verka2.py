@@ -30,7 +30,7 @@ torch.cuda.set_device("cuda:0")
 tokenizer = AutoTokenizer.from_pretrained('/home/jovyan/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/')
 model_cfg = AutoConfig.from_pretrained('/home/jovyan/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json')
 model_cfg.num_labels = EnformerDataset.TG_COUNT
-model = BertForEnformer(config=model_cfg)
+model = BertForEnformer(config=model_cfg, tokenizer=tokenizer)
 
 model = model.cuda()
 model.eval()
@@ -38,7 +38,7 @@ model.eval()
 predictor = Predictor(model_cfg).cuda()
 predictor.eval()
 
-weights = torch.load("/home/jovyan/enformer_3.pt", map_location="cpu")
+weights = torch.load("/home/jovyan/enformer_4.pt", map_location="cpu")
 model.load_state_dict(weights["mem_acc"])
 predictor.load_state_dict(weights["pred_acc"])
 
@@ -71,7 +71,7 @@ def collate_fn(batch):
     }
 
 
-data_filter = DataFilter(512)
+data_filter = DataFilter(511)
 
 mem_acc = Accumulator(model, decay=0.9)
 pred_acc = Accumulator(predictor, decay=0.9)

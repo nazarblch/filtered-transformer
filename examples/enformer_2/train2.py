@@ -33,7 +33,7 @@ tokenizer = AutoTokenizer.from_pretrained('/home/jovyan/filtered-transformer/dat
 # bert: BertModel = BertModel.from_pretrained('AIRI-Institute/gena-lm-bert-base')
 model_cfg = AutoConfig.from_pretrained('/home/jovyan/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json')
 model_cfg.num_labels = EnformerDataset.TG_COUNT
-model = BertForEnformer(config=model_cfg)
+model = BertForEnformer(config=model_cfg, tokenizer=tokenizer)
 # weights = bert.state_dict()
 # weights.pop("pooler.dense.weight")
 # weights.pop("pooler.dense.bias")
@@ -45,14 +45,14 @@ model.train()
 predictor = Predictor(model_cfg).cuda()
 predictor.train()
 
-weights = torch.load("/home/jovyan/enformer_3.pt", map_location="cpu")
+weights = torch.load("/home/jovyan/enformer_4.pt", map_location="cpu")
 model.load_state_dict(weights["mem"])
 predictor.load_state_dict(weights["pred"])
 
 optimizer = AdamW([
-    {"params": model.bert.parameters(), "lr": 2e-5},
-    {"params": model.encoder.parameters(), "lr": 5e-5},
-    {"params": predictor.parameters(), "lr": 5e-5},
+    {"params": model.bert.parameters(), "lr": 1e-5},
+    {"params": model.encoder.parameters(), "lr": 3e-5},
+    {"params": predictor.parameters(), "lr": 3e-5},
 ] , weight_decay=1e-5)
 
 print("pad token id", tokenizer.pad_token_id)
@@ -91,9 +91,9 @@ train_dataset = EnformerDataset(tokenizer, data_path)
 
 print(f'len(train_dataset): {len(train_dataset)}')
 
-train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=32, pin_memory=True, num_workers=8, collate_fn=collate_fn)
+train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=24, pin_memory=True, num_workers=8, collate_fn=collate_fn)
 
-data_filter = DataFilter(512)
+data_filter = DataFilter(511)
 
 memup_iter = MemoryRollout[Dict[str, torch.Tensor]](
     steps=2,
@@ -164,9 +164,9 @@ for _ in range(10):
         while not done:
             global_step += 1
 
-            data_collector, state, info, done = memup_iter.forward(batch, state, info, DataCollectorTrain())
-                
             optimizer.zero_grad()
+
+            data_collector, state, info, done = memup_iter.forward(batch, state, info, DataCollectorTrain())
             
             loss = predictor_loss.forward(data_collector, info, selected_data, last_state)
             print(it, loss.item())
@@ -183,7 +183,7 @@ for _ in range(10):
                         "pred": predictor.state_dict(),
                         "mem_acc": mem_acc.get_module().state_dict(),
                         "pred_acc": pred_acc.get_module().state_dict()
-                    }, "/home/jovyan/enformer_3.pt")
+                    }, "/home/jovyan/enformer_4.pt")
 
         mem_acc.accumulate()
         pred_acc.accumulate()

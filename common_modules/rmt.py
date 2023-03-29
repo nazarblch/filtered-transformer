@@ -39,11 +39,8 @@ class RecurrentTransformerWithStateEmbedding(RecurrentTransformer):
         # self.model.embeddings = self.model.base_model.embeddings.word_embeddings
 
     def _extend_input(self, input_ids: Tensor, attention_mask: Tensor, token_type_ids: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
-        if input_ids[0][0].item() == self.cls_token.item():
-           input_ids = input_ids[:, 1:] 
-           attention_mask = attention_mask[:, 1:]
-           token_type_ids = token_type_ids[:, 1:]
-        
+        assert input_ids[0][0].item() != self.cls_token.item()
+           
         prefix = torch.cat([self.cls_token, self.mem_token_ids, self.sep_token])[None, :].repeat(input_ids.shape[0], 1)
         input_ids = torch.cat([prefix, input_ids], dim=1)
         attention_mask = torch.cat([torch.ones_like(prefix), attention_mask], dim=1)

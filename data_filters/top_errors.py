@@ -33,8 +33,9 @@ class TopErrorsFilter(SeqDataFilter[InputTarget]):
             index = torch.topk(errors, count, dim=1).indices
 
         info["selected_index"] = index
+        mask = torch.ones(index.shape[:2], device=index.device, dtype=torch.bool)
 
-        return InputTarget(select_by_index(index, context), select_by_index(index, target), self.count)
+        return InputTargetMask(select_by_index(index, context), select_by_index(index, target), mask, self.count)
 
     @torch.no_grad()
     def forward(self, data: InputTarget, state: State, info: Info, *args) -> Tuple[InputTarget, Done]:

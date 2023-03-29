@@ -33,27 +33,27 @@ torch.cuda.set_device("cuda:0")
 tokenizer = AutoTokenizer.from_pretrained('/home/jovyan/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/')
 model_cfg = AutoConfig.from_pretrained('/home/jovyan/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json')
 model_cfg.num_labels = EnformerDataset.TG_COUNT
-enformer_bert = BertForEnformer(config=model_cfg)
+EnformerDataset.BLOCK_SIZE = 310 - 1
+enformer_bert = BertForEnformer(config=model_cfg, tokenizer=tokenizer)
 
 weights = torch.load("/home/jovyan/model_best.pth", map_location="cpu")
 enformer_bert.load_state_dict(weights["model_state_dict"], strict=False)
 
-rmt = RecurrentTransformerWithStateEmbedding(enformer_bert.base_model, 50, tokenizer)
+rmt = RecurrentTransformerWithStateEmbedding(enformer_bert.base_model, 200, tokenizer)
 
 rmt = rmt.cuda()
 rmt.train()
 
-predictor = Predictor(model_cfg).cuda()
+predictor = Predictor(model_cfg, mult=2).cuda()
 predictor.train()
 
 # weights = torch.load("/home/jovyan/enformer_4.pt", map_location="cpu")
 # rmt.load_state_dict(weights["mem_acc"])
 # predictor.load_state_dict(weights["pred_acc"])
 
-
 optimizer = AdamW([
-    {"params": rmt.parameters(), "lr": 1e-4},
-    {"params": predictor.parameters(), "lr": 1e-4},
+    {"params": rmt.parameters(), "lr": 3e-5},
+    {"params": predictor.parameters(), "lr": 3e-5},
 ] , weight_decay=1e-5)
 
 
@@ -70,8 +70,6 @@ def collate_fn(batch):
                 batch_first=True, 
                 padding_value=pad_token_ids[k]
             )
-            if name == "center":
-                padded_batch[k] = padded_batch[k][:, 1:]  
 
         return padded_batch
 
@@ -93,9 +91,9 @@ train_dataset = EnformerDataset(tokenizer, data_path)
 
 print(f'len(train_dataset): {len(train_dataset)}')
 
-train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=32, pin_memory=True, num_workers=8, collate_fn=collate_fn)
+train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=24, pin_memory=True, num_workers=8, collate_fn=collate_fn)
 
-data_filter = DataFilter(460)
+data_filter = DataFilter(310)
 
 memup_iter = MemoryRollout[Dict[str, torch.Tensor]](
     steps=3,

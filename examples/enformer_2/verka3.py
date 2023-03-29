@@ -30,6 +30,7 @@ torch.cuda.set_device("cuda:0")
 tokenizer = AutoTokenizer.from_pretrained('/home/jovyan/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/')
 model_cfg = AutoConfig.from_pretrained('/home/jovyan/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json')
 model_cfg.num_labels = EnformerDataset.TG_COUNT
+EnformerDataset.BLOCK_SIZE = 310 - 1
 enformer_bert = BertForEnformer(config=model_cfg)
 
 rmt = RecurrentTransformerWithStateEmbedding(enformer_bert.base_model, 200, tokenizer)
@@ -40,7 +41,7 @@ rmt.eval()
 predictor = Predictor(model_cfg).cuda()
 predictor.eval()
 
-weights = torch.load("/home/jovyan/enformer_4.pt", map_location="cpu")
+weights = torch.load("/home/jovyan/enformer_5.pt", map_location="cpu")
 rmt.load_state_dict(weights["mem_acc"])
 predictor.load_state_dict(weights["pred_acc"])
 

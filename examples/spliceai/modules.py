@@ -233,7 +233,7 @@ class Predictor(nn.Module):
         super().__init__()
         config2 = deepcopy(bert_config)
         config2.num_attention_heads = 4
-        config2.num_hidden_layers = 2
+        config2.num_hidden_layers = 4
         config2.intermediate_size = bert_config.hidden_size
 
         self.encoder = BertEncoder(config2)
@@ -274,12 +274,12 @@ class Predictor(nn.Module):
         assert mask.shape[1] == T
         print(B, "T=", T, "D=", D)
         mult = x.shape[2] // D
-        # extended_mask = mask[:, :, None].expand(*mask.shape, mult).reshape(B, T * mult).type(torch.int32)
+        extended_mask = mask[:, :, None].expand(*mask.shape, mult).reshape(B, T * mult).type(torch.int32)
         state_mask = torch.ones(state.shape[:2], dtype=torch.int32, device=state.device)
-        # extended_mask = torch.cat([extended_mask, state_mask], dim=1)
+        extended_mask = torch.cat([extended_mask, state_mask], dim=1)
         xs = torch.cat([x.reshape(B, T * mult, D), state], dim=1)
-        # extended_mask = self.get_extended_attention_mask(extended_mask, xs.shape)
-        out = self.encoder.forward(xs)['last_hidden_state'][:, 0:T*mult:mult].reshape(B, T, D)
+        extended_mask = self.get_extended_attention_mask(extended_mask, xs.shape)
+        out = self.encoder.forward(xs, attention_mask=extended_mask)['last_hidden_state'][:, (mult-1):T*mult:mult].reshape(B, T, D)
         return self.head(out)
     
 

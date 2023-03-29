@@ -22,8 +22,7 @@ if __name__ == '__main__':
     tokenizer = AutoTokenizer.from_pretrained("/home/jovyan/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/")
 
     data_path = "/home/jovyan/splice/train.csv.gz"
-    train_dataset = SpliceAIDataset(data_path, tokenizer, max_seq_len=512,
-                                    targets_offset=5000, targets_len=5000)
+    train_dataset = SpliceAIDataset(data_path, tokenizer, max_seq_len=512 * 2, targets_offset=5000, targets_len=5000)
     
     train_dataloader = DataLoader(train_dataset, batch_size=32, num_workers=4, shuffle=True)
     # define model
