@@ -70,7 +70,7 @@ class PredictorLoss(MemUpLoss):
         if count > 1:
             sample_size = out.shape[1] // count
             index = torch.multinomial(
-                torch.ones(out.shape[0], out.shape[1], device=out.device) / out.shape[1],
+                torch.ones(out.shape[0], out.shape[1], device=out.device) * mask.type(torch.int32) / out.shape[1] + 1e-8,
                 sample_size,
                 replacement=False)
             out, target, mask = select_by_index(index, out), select_by_index(index, target), select_by_index(index, mask)

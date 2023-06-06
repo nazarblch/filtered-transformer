@@ -1,0 +1,9 @@
+class className {
+    constructor(param) {
+        
+    }
+}
+
+function func(param) {
+    
+}

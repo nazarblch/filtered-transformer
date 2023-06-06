@@ -2,6 +2,7 @@ from copy import deepcopy
 from typing import Dict, Optional, Tuple
 from typing_extensions import override
 from gena_lm.modeling_bert import BertPreTrainedModel, BertModel, BertEncoder
+from data_filters.top_errors import InputTargetMask
 from memup.loss import TOSM
 from torch import Tensor
 from memup.base import DataCollectorAppend, MemUpMemory, State
@@ -103,10 +104,11 @@ class BertForSpliceAI(BertPreTrainedModel):
 
     _keys_to_ignore_on_load_unexpected = [r"pooler"]
 
-    def __init__(self, config):
+    def __init__(self, config, tokenizer):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
+        self.tokenizer = tokenizer
 
         self.bert = BertModel(config, add_pooling_layer=False)
         self.bert.train()
@@ -147,6 +149,13 @@ class BertForSpliceAI(BertPreTrainedModel):
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        prefix = torch.tensor([self.tokenizer.cls_token_id]).cuda()[None, :].repeat(input_ids.shape[0], 1) 
+        suff = torch.tensor([self.tokenizer.sep_token_id]).cuda()[None, :].repeat(input_ids.shape[0], 1) 
+
+        input_ids = torch.cat([prefix, input_ids, suff], 1)
+        attention_mask = torch.cat([torch.ones_like(prefix), attention_mask, torch.ones_like(suff)], dim=1)
+        token_type_ids = torch.cat([torch.zeros_like(prefix), token_type_ids, torch.zeros_like(suff)], dim=1)  
+
         outputs = self.bert(
             input_ids,
             attention_mask=attention_mask,
@@ -160,13 +169,14 @@ class BertForSpliceAI(BertPreTrainedModel):
         )
 
         h = outputs[0]
+        h = h[:, 1: h.shape[1]-1]
 
         hs = torch.cat([h, state], dim=1)
         hs = self.encoder(hs)['last_hidden_state']
         new_state = hs[:, h.shape[1]:]
         out = hs[:, : h.shape[1]]
 
-        empty_mask = attention_mask.type(torch.int32).sum(1)
+        empty_mask = attention_mask[:, 1: h.shape[1]-1].type(torch.int32).sum(1)
         new_state[empty_mask == 0] = state[empty_mask == 0]
 
         return out, h, labels_mask.type(torch.bool), new_state
@@ -186,8 +196,7 @@ class MemUpMemoryImpl(MemUpMemory):
         lens = lens.cpu().type(torch.int32).numpy().tolist()
         B, D = out.shape[0], out.shape[-1]
         bins_output = torch.cat([
-            data["positions"],
-            hidden,
+            # hidden + data["positions"],
             out
         ], dim=-1)
         
@@ -201,30 +210,20 @@ class DataCollectorTrain(DataCollectorAppend[Dict[str, Tensor], TOSM]):
     def apply(self, data: Dict[str, Tensor], out: Tensor, state: State) -> TOSM:
 
         mask = data["labels_mask"]
-        labels = data["labels_ohe"]
+        labels = data["labels"]
 
-        return TOSM(labels, out, state, mask)  if out is not None else TOSM(None, None, state, None)
+        return TOSM(labels, out, state, mask) if out is not None else TOSM(None, None, state, None)
     
 
 class ContextCollector(DataCollectorAppend[Dict[str, Tensor], Tuple[Tensor, Tensor, Tensor]]):
     def apply(self, data:  Dict[str, Tensor], out: Tensor, state: State) -> Optional[Tuple[Tensor, Tensor, Tensor]]:
         mask = data["labels_mask"]
-        labels = data["labels_ohe"]
+        labels = data["labels"]
         return (out.cpu(), mask.cpu(), labels.cpu()) if out is not None else None
     
     @override
     def result(self, cat_dims: Tuple[int] = ..., cat_keys: Tuple[str] = ...):
-        context = torch.cat([c for c, _, _ in self.collection], 1)
-        c_mask = torch.cat([m for _, m, _ in self.collection], 1)
-        labels = torch.cat([l for _, _, l in self.collection], 1)
-
-        lens = c_mask.type(torch.int32).sum(1)
-        lens = lens.cpu().type(torch.int32).numpy().tolist()
-        c_mask_2 = pad_sequence(torch.split(c_mask[c_mask], lens), batch_first=True, padding_value=False)
-        labels_2 = pad_sequence(torch.split(labels[c_mask], lens), batch_first=True, padding_value=0)
-        context_2 = pad_sequence(torch.split(context[c_mask], lens), batch_first=True, padding_value=0)
-
-        return context_2, c_mask_2, labels_2
+        return [InputTargetMask(o, l, m, o.shape[1]) for o, m, l in self.collection]
     
 
 class Predictor(nn.Module):
@@ -233,8 +232,8 @@ class Predictor(nn.Module):
         super().__init__()
         config2 = deepcopy(bert_config)
         config2.num_attention_heads = 4
-        config2.num_hidden_layers = 4
-        config2.intermediate_size = bert_config.hidden_size
+        config2.num_hidden_layers = 3
+        config2.intermediate_size = bert_config.hidden_size * 2
 
         self.encoder = BertEncoder(config2)
         self.config = config2
@@ -283,4 +282,24 @@ class Predictor(nn.Module):
         return self.head(out)
     
 
-        
+class SpliceLoss(nn.Module):
+
+    def forward(self, logits: Tensor, labels: Tensor):
+        B = logits.shape[0]
+        pos_weight = torch.tensor([1.0, 100.0, 100.0])
+        pos_weight_seq = pos_weight.repeat(B, 1).cuda()
+        loss_fct = BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight_seq)
+        loss = loss_fct(logits, labels)
+        loss = loss.sum() / B if B != 0.0 else torch.tensor(0.0, device=logits.device)
+        return loss
+    
+
+class SpliceLossFlat(nn.Module):
+
+    def forward(self, logits: Tensor, labels: Tensor):
+        B = logits.shape[0]
+        pos_weight = torch.tensor([1.0, 100.0, 100.0], device=logits.device)
+        pos_weight_seq = pos_weight.repeat(B, 1)
+        loss_fct = BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight_seq)
+        loss = loss_fct(logits, labels)
+        return loss

@@ -1,9 +1,8 @@
 import json
 import logging
 import os
-import random
 import sys
-from typing import Dict, List
+from typing import Dict
 
 from common_modules.pos_encoding import PositionalEncoding2
 from data_filters.sliding_window import SlidingWindowFilterDict
@@ -32,35 +31,25 @@ if __name__ == '__main__':
 
     tokenizer = AutoTokenizer.from_pretrained("/home/jovyan/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/")
 
-    data_path = "/home/jovyan/splice/train.csv.gz"
+    data_path = "/home/jovyan/splice/dataset_test_0.csv.gz"
+    # data_path = "/home/jovyan/splice/train.csv.gz"
     train_dataset = SpliceAIDataset(data_path, tokenizer, max_seq_len=510 * 6 + 1, targets_offset=5000, targets_len=5000)
     
-    train_dataloader = DataLoader(train_dataset, batch_size=32, num_workers=4, shuffle=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=40, num_workers=4, shuffle=True)
     # define model
     model_cfg = AutoConfig.from_pretrained("/home/jovyan/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json")
     model_cfg.num_labels = 3
     model_cfg.problem_type = 'multi_label_classification'
-    # bert = BertForTokenClassification(config=model_cfg)
     model = BertForSpliceAI(config=model_cfg, tokenizer=tokenizer)
+    print(model_cfg)
     
     model = model.cuda()
     predictor = Predictor(model_cfg).cuda()
 
     weights = torch.load("/home/jovyan/splice_2.pt", map_location="cpu")
-    model.load_state_dict(weights["mem"])
-    predictor.load_state_dict(weights["pred"])
+    model.load_state_dict(weights["mem_acc"])
+    predictor.load_state_dict(weights["pred_acc"])
 
-    model.train()
-    predictor.train()
-
-    # define optimizer
-    optimizer = AdamW([
-            {"params": model.bert.parameters(), "lr": 5e-6},
-            {"params": model.encoder.parameters(), "lr": 2e-5},
-            {"params": predictor.parameters(), "lr": 2e-5},
-    ], weight_decay=1e-5)
-
-    
     def batch_transform_fn(batch):
         return {
             'input_ids': batch['input_ids'].cuda()[:, 1:],
@@ -68,16 +57,6 @@ if __name__ == '__main__':
             'attention_mask': batch['attention_mask'].cuda()[:, 1:],
             'labels': batch['labels_ohe'].cuda()[:, 1:],
             'labels_mask': batch['labels_mask'].type(torch.bool).cuda()[:, 1:]
-        }
-    
-    def random_batch_transform_fn(batch):
-        shift = random.randint(0, 50)
-        return {
-            'input_ids': batch['input_ids'].cuda()[:, 1 + shift:],
-            'token_type_ids': batch['token_type_ids'].cuda()[:, 1 + shift:],
-            'attention_mask': batch['attention_mask'].cuda()[:, 1 + shift:],
-            'labels': batch['labels_ohe'].cuda()[:, 1 + shift:],
-            'labels_mask': batch['labels_mask'].type(torch.bool).cuda()[:, 1 + shift:]
         }
 
     @torch.no_grad()
@@ -102,48 +81,23 @@ if __name__ == '__main__':
 
 
     data_filter = SlidingWindowFilterDict(510, pad_fields=set(), padding=0, skip_fields={"length"})
-    pos_encoder = PositionalEncoding2(768, 0, 510 * 6)
+    pos_encoder = PositionalEncoding2(768, 0, 510 * 4)
 
-    memup_iter = MemoryRollout[Dict[str, torch.Tensor]](
-        steps=2,
+    memup_iter_acc = MemoryRollout[Dict[str, torch.Tensor]](
+        steps=1000,
         memory=MemUpMemoryImpl(model),
         data_filter=data_filter,
         info_update=[IncrementStep()]
     )
 
-    predictor_loss = PredictorLoss(predictor, [
-        LossModule(SpliceLoss(), "BCE", 1.0),
-    ])
+    model.eval()
+    predictor.eval()
 
-    mem_acc = Accumulator(model, decay=0.97)
-    pred_acc = Accumulator(predictor, decay=0.97)
-
-    errors_filter = TopErrorsFilterWithMask((250, 300), pred_acc, SpliceLossFlat(), is_random=True)
-
-    memup_iter_acc = MemoryRollout[Dict[str, torch.Tensor]](
-        steps=1000,
-        memory=MemUpMemoryImpl(mem_acc.get_module()),
-        data_filter=data_filter,
-        info_update=[IncrementStep()]
-    )
-
-    predictor_loss = PredictorLossWithContext(predictor, [
-            LossModule(SpliceLoss(), "BCE", 1.0),
-    ], cur_step_loss_coef=1)
-    
-    writer = SummaryWriter("/home/jovyan/pomoika/splice2.8")
-    global_step: int = 0
-
-def train_epoch(global_step: int) -> int:
-
-    model.train()
-    predictor.train()
-    mem_acc.get_module().train()
+    mean_test = []
 
     for batch in train_dataloader:
 
-        batch = batch_transform_fn(batch) if random.randint(0, 10) > 5 else random_batch_transform_fn(batch)
-
+        batch = batch_transform_fn(batch)
         B, T = batch["input_ids"].shape[0], batch["input_ids"].shape[1]
         state = torch.zeros(B, 100, model_cfg.hidden_size, device=torch.device("cuda:0"))
 
@@ -155,13 +109,12 @@ def train_epoch(global_step: int) -> int:
 
         with torch.no_grad():
             context_collector, last_state, _, _ = memup_iter_acc.forward(batch, state, {}, ContextCollector())
-            context: List[InputTargetMask] = context_collector.result()
+            context = context_collector.result()
             last_state = last_state.cuda()
-            selected_data = errors_filter.forward(context, last_state, {})
-
+          
             pred = []
             for dk in context:
-                pred_t = pred_acc(dk.input.cuda(), last_state, dk.mask.cuda())
+                pred_t = predictor(dk.input.cuda(), last_state, dk.mask.cuda())
                 pred.append(pred_t)
 
             pred = torch.cat(pred, 1).cpu()
@@ -174,40 +127,10 @@ def train_epoch(global_step: int) -> int:
                 'labels_mask': c_mask
             })
             print(metrics)
-            writer.add_scalar('pr_auc_mean', metrics['pr_auc_mean'], global_step)
-            
 
-        while not done:
-            global_step += 1
+            if metrics['pr_auc_mean'] > 0.5:
+                mean_test.append(metrics['pr_auc_mean'])
 
-            optimizer.zero_grad()
-
-            collector, state, info, done = memup_iter.forward(batch, state, info, DataCollectorTrain())
-            loss = predictor_loss.forward(collector, info, selected_data, last_state=last_state)
-            
-            print("loss=", loss.item())
-            writer.add_scalar("loss", loss.item(), global_step)
-
-            loss.backward()
-            optimizer.step()
-
-            for name, val in info["losses"].items():
-                writer.add_scalar(f"train_splice/{name}", val, global_step)
-
-            if global_step % 1000 == 0:
-                    torch.save({
-                        "mem": model.state_dict(),
-                        "pred": predictor.state_dict(),
-                        "mem_acc": mem_acc.get_module().state_dict(),
-                        "pred_acc": pred_acc.get_module().state_dict()
-                    }, "/home/jovyan/splice_2.pt")
-
-        mem_acc.accumulate()
-        pred_acc.accumulate()
-
-    return global_step
-
-
-
-for _ in range(100):
-    global_step = train_epoch(global_step)
+            print("mean test", sum(mean_test) / len(mean_test))
+     
+    

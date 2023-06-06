@@ -1,7 +1,7 @@
 import random
 from abc import ABC
 from collections import namedtuple
-from typing import Callable, Tuple
+from typing import Callable, List, Tuple
 import torch
 from torch import nn, Tensor
 from data_filters.sliding_window import SlidingWindowFilterTuple
@@ -72,14 +72,12 @@ class TopErrorsFilter(SeqDataFilter[InputTarget]):
         return self.sample_data(data.input, errors, target, info), False
     
 
-class TopErrorsFilterWithMask(SeqDataFilter[InputTargetMask]):
+class TopErrorsFilterWithMask:
 
-    def __init__(self, rollout: int, count: Tuple[int, int], predictor: nn.Module, metric: nn.Module, is_random=False):
+    def __init__(self, count: Tuple[int, int], predictor: nn.Module, metric: nn.Module, is_random=False):
         super().__init__()
         self.predictor = predictor
         self.metric = metric
-        self.rollout = rollout
-        self.window_filter = SlidingWindowFilterTuple[InputTargetMask](rollout, padding=0, skip_fields={"target", "length"})
         self.count = count
         self.is_random = is_random
 
@@ -87,6 +85,7 @@ class TopErrorsFilterWithMask(SeqDataFilter[InputTargetMask]):
         count = random.randint(*self.count)
         assert torch.all(errors >= 0)
         if self.is_random:
+            errors[errors.sum(dim=1) < 1e-8] += 1e-8
             probs = errors / errors.sum(dim=1, keepdim=True)
             index = torch.multinomial(probs, count, replacement=False)
         else:
@@ -94,24 +93,22 @@ class TopErrorsFilterWithMask(SeqDataFilter[InputTargetMask]):
 
         info["selected_index"] = index
 
-        return InputTargetMask(select_by_index(index, context), select_by_index(index, target), select_by_index(index, mask), self.count)
+        return InputTargetMask(select_by_index(index, context).cuda(), 
+                               select_by_index(index, target).cuda(), 
+                               select_by_index(index, mask).cuda(), 
+                               self.count)
 
     @torch.no_grad()
-    def forward(self, data: InputTargetMask, state: State, info: Info, *args) -> Tuple[InputTargetMask, Done]:
-        done = False
-        info2 = {}
-        increment_step = IncrementStep()
+    def forward(self, data: List[InputTargetMask], state: State, info: Info, *args) -> InputTargetMask:
         predictions = []
+        state = state.cuda()
 
-        while not done:
-            info2 = increment_step.forward(data, state, info2)
-            filtered_data, done = self.window_filter.forward(data, state, info2)
-            mask = filtered_data.mask.cuda()
-            pred = self.predictor(filtered_data.input.cuda(), state, mask).cpu()
+        for dk in data:
+            pred = self.predictor(dk.input.cuda(), state, dk.mask.cuda()).cpu()
             predictions.append(pred)
 
         predictions = torch.cat(predictions, 1)
-        target = data.target
+        target = torch.cat([dk.target for dk in data], 1)
         assert predictions.shape[1] == target.shape[1]
 
         B, T = predictions.shape[0], predictions.shape[1]
@@ -128,7 +125,9 @@ class TopErrorsFilterWithMask(SeqDataFilter[InputTargetMask]):
         if not torch.all(errors >= 0):
            errors = errors - errors.min()
 
-        errors[data.mask == False] = 0.0
+        mask = torch.cat([dk.mask for dk in data], 1)
+        input = torch.cat([dk.input for dk in data], 1)
+        errors = errors * mask.type(torch.int32)
 
-        return self.sample_data(data.input, errors, target, data.mask, info), False
+        return self.sample_data(input, errors, target, mask, info)
 

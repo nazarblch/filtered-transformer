@@ -10,7 +10,6 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from typing import Dict, List
 from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
-
 from common_modules.pos_encoding import PositionalEncoding2
 
 
@@ -114,9 +113,9 @@ class BertRecurrentTransformer(RecurrentTransformer):
 
         self.encoder = BertEncoder(config)
         self.encoder.train()
-        self.encoder2 = BertEncoder(config)
-        for i in range(num_layers):
-            self.encoder2.layer[i] = bert.encoder.layer[i]
+        # self.encoder2 = BertEncoder(config)
+        # for i in range(num_layers):
+        #     self.encoder2.layer[i] = bert.encoder.layer[i]
 
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
         return h['last_hidden_state']
@@ -140,7 +139,7 @@ class BertRecurrentTransformer(RecurrentTransformer):
 
 class BertRecurrentTransformerWithTokenizer(BertRecurrentTransformer):
 
-    def __init__(self, bert: BertModel, tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast, max_len: int, nhead: int = 4, num_layers: int = 2, dim_feedforward: int = 2048):
+    def __init__(self, bert: BertModel, tokenizer: PreTrainedTokenizer, max_len: int, nhead: int = 4, num_layers: int = 2, dim_feedforward: int = 2048):
         super().__init__(bert, nhead, num_layers, dim_feedforward)
         self.tokenizer = tokenizer
         self.max_len = max_len
@@ -176,7 +175,7 @@ class BertRecurrentLSTM(RecurrentTransformer):
         self.bert: BertModel = bert
         self.num_layers = num_layers
         self.encoder = nn.LSTM(input_size=768, hidden_size=dim_feedforward, num_layers=num_layers, batch_first=True, dropout=0.1)
-        self.encoder = chrono_init(self.encoder, Tmax=4000)
+        # self.encoder = chrono_init(self.encoder, Tmax=4000)
 
     def extract_hidden(self, h: BaseModelOutputWithPoolingAndCrossAttentions) -> Tensor:
         return h['last_hidden_state']
@@ -348,6 +347,7 @@ class BertClassifier(nn.Module):
 
         self.head = nn.Sequential(
             nn.Linear(d_model, d_model),
+            nn.Dropout(0.1),
             nn.ReLU(),
             nn.Linear(d_model, d_model),
             nn.Dropout(0.1),

@@ -20,7 +20,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
 import transformers
-from transformers import AutoConfig, AutoTokenizer, HfArgumentParser
+from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, BigBirdForSequenceClassification
 from transformers.optimization import AdamW
 import numpy as np
 from examples.enformer_2.data import EnformerDataset
@@ -32,19 +32,14 @@ from torch.utils.tensorboard import SummaryWriter
 
 torch.cuda.set_device("cuda:0")
 
-tokenizer = AutoTokenizer.from_pretrained('/home/jovyan/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/')
-model_cfg = AutoConfig.from_pretrained('/home/jovyan/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json')
+tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bigbird-base-t2t')
+model_cfg = AutoConfig.from_pretrained('AIRI-Institute/gena-lm-bigbird-base-t2t')
 model_cfg.num_labels = EnformerDataset.TG_COUNT
 model = BertForEnformer(config=model_cfg, tokenizer=tokenizer)
 
-# bert = BertForTokenClassification(config=model_cfg)
-# ckpt_path = '/home/jovyan/splice/model_1900000.pth'
-# checkpoint = torch.load(ckpt_path, map_location='cpu')
-# bert.load_state_dict(checkpoint["model_state_dict"], strict=False)
-# weights = bert.bert.state_dict()
-# weights.pop("pooler.dense.weight")
-# weights.pop("pooler.dense.bias")
-# model.bert.load_state_dict(weights)
+
+b_bert = BigBirdForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bigbird-base-t2t')
+model.bert = b_bert.bert
 
 model = model.cuda()
 model.train()
@@ -52,7 +47,7 @@ model.train()
 predictor = Predictor(model_cfg, 1).cuda()
 predictor.train()
 
-weights = torch.load("/home/jovyan/enformer_6.1.pt", map_location="cpu")
+weights = torch.load("/home/jovyan/enformer_7.0.pt", map_location="cpu")
 model.load_state_dict(weights["mem"])
 predictor.load_state_dict(weights["pred"])
 
@@ -98,12 +93,12 @@ train_dataset = EnformerDataset(tokenizer, data_path)
 
 print(f'len(train_dataset): {len(train_dataset)}')
 
-train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=16, pin_memory=True, num_workers=8, collate_fn=collate_fn)
+train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=8, pin_memory=True, num_workers=4, collate_fn=collate_fn)
 
-data_filter = DataFilter(511)
+data_filter = DataFilter(512 * 2)
 
 memup_iter = MemoryRollout[Dict[str, torch.Tensor]](
-    steps=4,
+    steps=2,
     memory=MemUpMemoryImpl(model),
     data_filter=data_filter,
     info_update=[IncrementStep()]
@@ -143,7 +138,7 @@ memup_iter_acc = MemoryRollout[Dict[str, torch.Tensor]](
     info_update=[IncrementStep()]
 )
 
-writer = SummaryWriter("/home/jovyan/pomoika/enformer6.2")
+writer = SummaryWriter("/home/jovyan/pomoika/enformer7.1")
 global_step = 0
 
 
@@ -215,7 +210,7 @@ for _ in range(10):
                         "pred": predictor.state_dict(),
                         "mem_acc": mem_acc.get_module().state_dict(),
                         "pred_acc": pred_acc.get_module().state_dict()
-                    }, "/home/jovyan/enformer_6.1.pt")
+                    }, "/home/jovyan/enformer_7.0.pt")
 
         pearson_corr_coef = MeanPearsonCorrCoefPerChannel(5313)
         prediction = predictor(context, last_state).cpu()

@@ -33,12 +33,9 @@ model_cfg.num_labels = EnformerDataset.TG_COUNT
 model = BertForEnformer(config=model_cfg, tokenizer=tokenizer)
 
 model = model.cuda()
-model.eval()
+predictor = Predictor(model_cfg, 1).cuda()
 
-predictor = Predictor(model_cfg).cuda()
-predictor.eval()
-
-weights = torch.load("/home/jovyan/enformer_4.pt", map_location="cpu")
+weights = torch.load("/home/jovyan/enformer_6.1.pt", map_location="cpu")
 model.load_state_dict(weights["mem_acc"])
 predictor.load_state_dict(weights["pred_acc"])
 
@@ -61,8 +58,8 @@ def collate_fn(batch):
     padded_center = pad_batch("center", ['input_ids', 'token_type_ids', 'attention_mask', 'bins_mask'])
     padded_center['labels'] = torch.stack([torch.from_numpy(el["center"]["labels"]) for el in batch])
 
-    padded_left = pad_batch("left", ['input_ids', 'token_type_ids', 'attention_mask'])
-    padded_right = pad_batch("right", ['input_ids', 'token_type_ids', 'attention_mask'])
+    padded_left = pad_batch("left", ['input_ids', 'token_type_ids', 'attention_mask', 'bins_mask'])
+    padded_right = pad_batch("right", ['input_ids', 'token_type_ids', 'attention_mask', 'bins_mask'])
 
     return {
         "left": padded_left,
@@ -73,19 +70,14 @@ def collate_fn(batch):
 
 data_filter = DataFilter(511)
 
-mem_acc = Accumulator(model, decay=0.9)
-pred_acc = Accumulator(predictor, decay=0.9)
-
 memup_iter_acc = MemoryRollout[Dict[str, torch.Tensor]](
     steps=1000,
-    memory=MemUpMemoryImpl(mem_acc),
+    memory=MemUpMemoryImpl(model),
     data_filter=data_filter,
     info_update=[IncrementStep()]
 )
 
 pearson_corr_coef = MeanPearsonCorrCoefPerChannel(5313)
-mem_acc.get_module().eval()
-pred_acc.get_module().eval()
 
 simple_corr = []
 
@@ -95,6 +87,8 @@ train_dataset = EnformerDataset(tokenizer, data_path)
 print(f'len(train_dataset): {len(train_dataset)}')
 
 train_dataloader = DataLoader(train_dataset, shuffle=False, batch_size=40, num_workers=5, collate_fn=collate_fn)
+predictor.eval()
+model.eval()
 
 
 for it, batch in enumerate(train_dataloader):
@@ -102,7 +96,7 @@ for it, batch in enumerate(train_dataloader):
     info = {}
     done = False
     print()
-    state = torch.zeros(batch["center"]["labels"].shape[0], 300, model_cfg.hidden_size, device=torch.device("cuda:0"))
+    state = torch.zeros(batch["center"]["labels"].shape[0], 200, model_cfg.hidden_size, device=torch.device("cuda:0"))
 
     train_set = []
     train_state = None
@@ -112,25 +106,15 @@ for it, batch in enumerate(train_dataloader):
         train_state = last_state
         context = context_collector.result()
         print("context", context.shape)
-        if context.shape[1] != 896:
-            continue
 
-        predictions = []
-
-        for j in range(0, 896, 28):
-            mask = torch.ones(context.shape[0], 28, dtype=torch.bool).cuda()
-            pred_j = pred_acc(context[:, j:j+28].cuda(), last_state.cuda(), mask).cpu()
-            # tg_j = batch["center"]["labels"][:, j:j+28]
-            predictions.append(pred_j)
-
-        predictions = torch.cat(predictions, 1)
-        print(predictions.shape)
-
-        pearson_corr_coef.update(predictions, batch["center"]["labels"])
+        B = context.shape[0]
+        prediction = predictor(context.cuda(), last_state.cuda()).cpu()
+            
+        pearson_corr_coef.update(prediction, batch["center"]["labels"])
         p_corr = pearson_corr_coef.compute().mean().item()
         print("pearson_corr_coef", p_corr)
 
-        simple_corr.append(PearsonCorrLoss()(predictions.reshape(-1, 5313), batch["center"]["labels"].reshape(-1, 5313)).item())
+        simple_corr.append(PearsonCorrLoss()(prediction.reshape(-1, 5313), batch["center"]["labels"].reshape(-1, 5313)).item())
         print("simple_corr_coef", sum(simple_corr) / len(simple_corr))
 
     

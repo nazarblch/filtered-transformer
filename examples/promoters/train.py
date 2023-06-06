@@ -1,4 +1,6 @@
 import time
+from pathlib import Path
+
 from omegaconf import OmegaConf
 from torch import nn
 import sys
@@ -15,8 +17,8 @@ from memup.loss import PredictorLoss, LossModule, PredictorLossStateOnly, EvalLo
 from memup.preproc import IncrementStep
 from examples.promoters.modules import MemUpMemoryImpl, DataCollectorTrain, DataCollectorLastState
 from common_modules.transformers import BertRecurrentTransformerWithTokenizer, BertClassifier
-from transformers import AutoTokenizer
-from gena_lm.modeling_bert import BertModel, BertForSequenceClassification
+from transformers import AutoTokenizer, AutoModel, AutoConfig
+from gena_lm.modeling_bert import BertModel, BertForSequenceClassification, BertForMaskedLM, BertConfig
 from memup.base import MemoryRollout
 from examples.promoters.modules import DataType
 from metrics.accuracy import AccuracyMetric
@@ -35,13 +37,24 @@ rollout = conf.model.rec_block_size
 state_length = conf.model.state_size
 data_filter = SlidingWindowFilterTuple[DataType](rollout, pad_fields={"text"}, padding=conf.model.rec_block_padding, skip_fields={"target", "length"})
 
-tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
-bert_model: BertModel = BertForSequenceClassification.from_pretrained('AIRI-Institute/gena-lm-bert-base').bert
+# tokenizer = AutoTokenizer.from_pretrained('AIRI-Institute/gena-lm-bert-base')
+# bert_model: BertModel = BertForSequenceClassification.from_pretrained("AIRI-Institute/gena-lm-bert-base").bert
+# checkpoint = torch.load("/home/slavic/PycharmProjects/bbert/pytorch_model.bin", map_location='cpu')
+# bert_model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+tokenizer = AutoTokenizer.from_pretrained("/tmp/pycharm_project_522/data/tokenizers/t2t_1000h_multi_32k")
+config = BertConfig.from_pretrained('/tmp/pycharm_project_522/data/configs/L24-H1024-A16-V32k-preln-lastln.json')
+bert_model = BertForSequenceClassification(config=config)
+# ckpt_path = '/home/slavic/PycharmProjects/lbert/pytorch_model.bin'
+# checkpoint = torch.load(ckpt_path, map_location='cpu')
+# bert_model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+bert_model = bert_model.bert
+
+bert_model.train()
 mem_transformer = BertRecurrentTransformerWithTokenizer(bert_model, tokenizer, conf.model.max_token_length, 4, 3, bert_model.config.hidden_size * 2).cuda()
 predictor = BertClassifier(2, bert_model.config, 4, 2, bert_model.config.hidden_size).cuda()
 
-# weights = torch.load("/home/slavic/PycharmProjects/promoter_e_1.pt")
-# mem_transformer.load_state_dict(weights["mem"])
+weights = torch.load(conf.data.save_path)
+mem_transformer.load_state_dict(weights["mem"])
 # predictor.load_state_dict(weights["pred"])
 
 opt = torch.optim.Adam([
@@ -89,7 +102,6 @@ def eval(i):
     all_pred = []
     all_labels = []
 
-    n = 0
     for text, labels in test_loader:
         state2 = torch.zeros(labels.shape[0], state_length, bert_model.config.hidden_size, device=torch.device("cuda"))
         T = len(text[0])
@@ -117,14 +129,6 @@ def train_one_epoch(memup_iter, train_loader, global_step):
 
     for text, labels in train_loader:
         print()
-
-        if global_step % 1000 == 0 and global_step > 0:
-            eval(global_step)
-            torch.save({
-                "mem": mem_transformer.state_dict(),
-                "pred": predictor.state_dict()
-            }, conf.data.save_path)
-
         state = torch.zeros(labels.shape[0], state_length, bert_model.config.hidden_size, device=torch.device("cuda"))
         T = len(text[0])
         done = False
@@ -142,6 +146,13 @@ def train_one_epoch(memup_iter, train_loader, global_step):
 
             loss.backward()
             opt.step()
+
+            if global_step % 1000 == 0:
+                eval(global_step)
+                torch.save({
+                    "mem": mem_transformer.state_dict(),
+                    "pred": predictor.state_dict()
+                }, conf.data.save_path)
 
         print(global_step, last_info)
 

@@ -11,7 +11,7 @@ class EnformerDataset(Dataset):
     BINS_COUNT = 896
     BIN_SIZE = 128
     PAD = (196608 - BIN_SIZE * BINS_COUNT) // 2
-    BLOCK_SIZE = 510
+    # BLOCK_SIZE = 510
 
     def __init__(self, tokenizer, path: str, remove_context=True):
         self.h5_file = h5py.File(path, "r")
@@ -57,21 +57,28 @@ class EnformerDataset(Dataset):
                        'bins_mask': bins_mask,
                        'labels': target}
         
-        left_inputs = self.tokenizer.batch_encode_plus([left], add_special_tokens=False, return_attention_mask=False, return_token_type_ids=False)['input_ids'][0]
-        right_inputs = self.tokenizer.batch_encode_plus([right], add_special_tokens=False, return_attention_mask=False, return_token_type_ids=False)['input_ids'][0]
-        BS = EnformerDataset.BLOCK_SIZE
-        left_inputs = reduce(lambda b1, b2: b1 + b2,
-                             [left_inputs[k:k+BS] + [sep] for k in range(0, len(left_inputs), BS)])
-        right_inputs = reduce(lambda b1, b2: b1 + b2,
-                             [right_inputs[k:k+BS] + [sep] for k in range(0, len(right_inputs), BS)])
+        BIN_SIZE = self.BIN_SIZE * 4
+        left_seq = [left[i * BIN_SIZE: (i+1) * BIN_SIZE] for i in range(len(left) // BIN_SIZE)]
+        right_seq = [right[i * BIN_SIZE: (i+1) * BIN_SIZE] for i in range(len(right) // BIN_SIZE)]
 
-        left_dict = {'input_ids': np.array(left_inputs),
-                     'token_type_ids': np.array([0] * len(left_inputs)),
-                     'attention_mask': np.array([1] * len(left_inputs))}
+        left_inputs = self.tokenizer.batch_encode_plus(left_seq, add_special_tokens=False, return_attention_mask=False, return_token_type_ids=False)['input_ids']
+        right_inputs = self.tokenizer.batch_encode_plus(right_seq, add_special_tokens=False, return_attention_mask=False, return_token_type_ids=False)['input_ids']
+        # BS = EnformerDataset.BLOCK_SIZE
+        left_inputs = np.asarray(reduce(lambda b1, b2: b1 + b2, [li + [sep] for li in left_inputs]))
+        right_inputs = np.asarray(reduce(lambda b1, b2: b1 + b2, [ri + [sep] for ri in right_inputs]))
         
-        right_dict = {'input_ids': np.array(right_inputs),
+        left_bins_mask = (left_inputs == self.tokenizer.sep_token_id).astype(bool)
+        right_bins_mask = (right_inputs == self.tokenizer.sep_token_id).astype(bool)
+
+        left_dict = {'input_ids': left_inputs,
+                     'token_type_ids': np.array([0] * len(left_inputs)),
+                     'attention_mask': np.array([1] * len(left_inputs)),
+                     'bins_mask': left_bins_mask}
+        
+        right_dict = {'input_ids': right_inputs,
                      'token_type_ids': np.array([0] * len(right_inputs)),
-                     'attention_mask': np.array([1] * len(right_inputs))}
+                     'attention_mask': np.array([1] * len(right_inputs)),
+                     'bins_mask': right_bins_mask}
         
         return {
             "left": left_dict,

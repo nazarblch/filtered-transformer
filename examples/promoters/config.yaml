@@ -5,11 +5,10 @@ data:
     - fold_2.csv
     - fold_3.csv
   test: fold_5.csv
-  logsdir: /home/buzun/pomoika/promoters2
-  save_path: /home/buzun/promoters2.pt
-
+  logsdir: /home/jovyan/pomoika/promoters223
+  save_path: /home/jovyan/promoters223.pt
 model:
-  batch_size: 32
+  batch_size: 128
   eval_batch_size: 512
   rec_block_size: 400
   rec_block_padding: 100
