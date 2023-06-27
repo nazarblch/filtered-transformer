@@ -1,6 +1,8 @@
 import random
 from turtle import forward
 from typing import Dict, Tuple
+from common_modules import pos_encoding
+from common_modules.pos_encoding import PositionalEncoding2
 from common_modules.rmt import RecurrentTransformerWithStateEmbedding
 from memup.base import Done, Info, State
 from torch import nn, Tensor
@@ -170,7 +172,7 @@ from memup.base import MemUpMemory
 
 class RobertaRT(nn.Module):
 
-    _keys_to_ignore_on_load_unexpected = [r"pooler"]
+    _keys_to_ignore_on_load_unexpected = [r"pooler", r"pos_encoder"]
 
     def __init__(self, roberta: RobertaModel):
         super().__init__()
@@ -187,6 +189,8 @@ class RobertaRT(nn.Module):
 
         self.encoder = RobertaModel(config2).encoder
         self.encoder.train()
+
+        # self.pos_encoder = PositionalEncoding2(768, 0.1, 500)
 
     def forward(
         self,
@@ -205,6 +209,7 @@ class RobertaRT(nn.Module):
         h = outputs[0]
 
         hs = torch.cat([h, state], dim=1)
+        # hs = self.pos_encoder(hs)
         hs = self.encoder(hs)['last_hidden_state']
         new_state = hs[:, h.shape[1]:]
         # out = hs[:, : h.shape[1]]

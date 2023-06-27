@@ -45,6 +45,20 @@ tokenizer = RobertaTokenizer.from_pretrained(
 adjust_tokenizer(tokenizer)
 
 
+model = RobertaRT(RobertaModel.from_pretrained(
+    'roberta-base',
+    cache_dir="/home/jovyan/cashe",
+    revision="main",
+)).cuda()
+
+predictor = Predictor(model.bert.config).cuda()
+
+weights = torch.load("/home/jovyan/qa_1.180.pt", map_location="cpu")
+model.load_state_dict(weights["mem"])
+predictor.load_state_dict(weights["pred"])
+
+
+
 task = tasks.get_task(task_args=tasks.TaskArguments(task_name="custom", task_base_path="/home/jovyan/quality_mc/"))
 dataset_dict = task.get_datasets()
 
@@ -52,7 +66,7 @@ tokenized_dataset_dict = get_tokenized_dataset(
     task=task,
     dataset_dict=dataset_dict,
     tokenizer=tokenizer,
-    max_seq_length=4096,
+    max_seq_length=8000,
     padding_strategy=PaddingStrategy(PaddingStrategy.MAX_LENGTH),
     truncation_strategy=TruncationStrategy(TruncationStrategy.ONLY_FIRST),
     model_mode="mc",
@@ -74,19 +88,7 @@ def collate_fn(batch):
 
 
 train_dataloader = DataLoader(train_data, shuffle=True, batch_size=32, num_workers=8, collate_fn=collate_fn)
-test_dataloader = DataLoader(test_data, shuffle=True, batch_size=128, num_workers=8, collate_fn=collate_fn)
-
-model = RobertaRT(RobertaModel.from_pretrained(
-    'roberta-base',
-    cache_dir="/home/jovyan/cashe",
-    revision="main",
-)).cuda()
-
-predictor = Predictor(model.bert.config).cuda()
-
-weights = torch.load("/home/jovyan/qa_3.30.pt", map_location="cpu")
-model.load_state_dict(weights["mem"])
-predictor.load_state_dict(weights["pred"])
+test_dataloader = DataLoader(test_data, shuffle=False, batch_size=128, num_workers=8, collate_fn=collate_fn)
 
 data_filter = DataFilter(tokenizer, 200)
 
@@ -114,7 +116,7 @@ class DataCollectorEval(DataCollectorReplace[Dict[str, Tensor], Tensor]):
         return state
 
 
-writer = SummaryWriter("/home/jovyan/pomoika/qa/1.12")
+writer = SummaryWriter("/home/jovyan/pomoika/qa/1.17")
 global_step = 0
 batch_count = 0
 
@@ -132,19 +134,22 @@ for it in range(100):
         model.train()
         predictor.train()
 
+        with torch.no_grad():
+            _, last_state, _, _ = memup_iter.forward(batch, state, {}, DataCollectorEval(), 100)
+
         print(it, batch_count, global_step)
 
-        grad_acc_times = 10
+        grad_acc_times = 5
 
         while not done:
             global_step += 1
 
             data_collector, state, info, done = memup_iter.forward(batch, state, info, DataCollectorTrain())
             states_seq = data_collector.result()
-            # pred = predictor(states_seq[-1])
-            pred = predictor(torch.cat(states_seq))
-            loss = nn.CrossEntropyLoss()(pred, torch.cat([labels] * len(states_seq)))
-            acc = AccuracyMetric()(pred, torch.cat([labels] * len(states_seq)))
+            pred = predictor(torch.cat([states_seq[-1], last_state], 1))
+            # pred = predictor(torch.cat(states_seq))
+            loss = nn.CrossEntropyLoss()(pred, labels)
+            acc = AccuracyMetric()(pred, labels)
 
             print(pred.argmax(-1).reshape(-1).cpu().numpy())
             
@@ -152,9 +157,9 @@ for it in range(100):
             writer.add_scalar("loss", loss.item(), global_step)
             writer.add_scalar("acc", acc, global_step)
 
-            (loss / grad_acc_times + loss * int(done) / 2).backward()
+            (loss / grad_acc_times).backward()
 
-            if global_step % grad_acc_times == 0 or done:
+            if global_step % grad_acc_times == 0:
                 opt.step()
                 opt.zero_grad()
 
@@ -162,7 +167,7 @@ for it in range(100):
             torch.save({
                 "mem": model.state_dict(),
                 "pred": predictor.state_dict()
-            }, f"/home/jovyan/qa_3.{batch_count}.pt")
+            }, f"/home/jovyan/qa_4.{batch_count}.pt")
 
             print("EVAL length ", len(test_data))
 
@@ -183,7 +188,7 @@ for it in range(100):
 
                     data_collector, _, _, _ = memup_iter.forward(batch, state, info, DataCollectorEval(), steps=1000)
                     states_seq = data_collector.result()
-                    pred = predictor(states_seq[-1])
+                    pred = predictor(torch.cat([states_seq[-1], states_seq[-1]], 1))
                     loss = nn.CrossEntropyLoss()(pred, labels)
                     acc = AccuracyMetric()(pred, labels)
 
