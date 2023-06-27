@@ -117,10 +117,10 @@ class DataFilter(nn.Module):
             info["shift_batch"] = torch.zeros(batch['input_ids'].shape[0] * 4, dtype=torch.int32)
         
         # 
-        if random.randint(0, 10) > 5 or info["shift_batch"].sum() < 1:
-            input_ids, new_shift = self.get_cut_input(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
-        else:
-            input_ids, new_shift = self.get_cut_input_without_option(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
+        # if random.randint(0, 10) > 5 or info["shift_batch"].sum() < 1:
+        input_ids, new_shift = self.get_cut_input(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
+        # else:
+        #     input_ids, new_shift = self.get_cut_input_without_option(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
         
         done = (info["shift_batch"] - new_shift).abs().sum().item() == 0
         info["shift_batch"] = new_shift
@@ -143,7 +143,7 @@ class Predictor(nn.Module):
         config2 = deepcopy(bert_config)
         config2.hidden_size = bert_config.hidden_size 
         config2.num_attention_heads = 2
-        config2.num_hidden_layers = 1
+        config2.num_hidden_layers = 2
         config2.hidden_dropout_prob = 0.1
         config2.intermediate_size = 768
 
@@ -161,6 +161,7 @@ class Predictor(nn.Module):
 
     def forward(self, state):
         B, D = state.shape[0], state.shape[2]
+        print(state.shape)
         out = self.encoder.forward(state)['last_hidden_state'][:, -1]
         return self.head(out).reshape(B // 4, 4)
     
