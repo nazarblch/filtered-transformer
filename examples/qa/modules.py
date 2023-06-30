@@ -1,6 +1,8 @@
 import random
 from turtle import forward
 from typing import Dict, Tuple
+from common_modules import pos_encoding
+from common_modules.pos_encoding import PositionalEncoding2
 from common_modules.rmt import RecurrentTransformerWithStateEmbedding
 from memup.base import Done, Info, State
 from torch import nn, Tensor
@@ -117,10 +119,10 @@ class DataFilter(nn.Module):
             info["shift_batch"] = torch.zeros(batch['input_ids'].shape[0] * 4, dtype=torch.int32)
         
         # 
-        # if random.randint(0, 10) > 5 or info["shift_batch"].sum() < 1:
-        input_ids, new_shift = self.get_cut_input(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
-        # else:
-        #     input_ids, new_shift = self.get_cut_input_without_option(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
+        if random.randint(0, 10) > 5 or info["shift_batch"].sum() < 1:
+            input_ids, new_shift = self.get_cut_input(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
+        else:
+            input_ids, new_shift = self.get_cut_input_without_option(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
         
         done = (info["shift_batch"] - new_shift).abs().sum().item() == 0
         info["shift_batch"] = new_shift
@@ -189,6 +191,8 @@ class RobertaRT(nn.Module):
         self.encoder = RobertaModel(config2).encoder
         self.encoder.train()
 
+        # self.pos_encoder = PositionalEncoding2(768, 0.1, 500)
+
     def forward(
         self,
         state,
@@ -206,6 +210,7 @@ class RobertaRT(nn.Module):
         h = outputs[0]
 
         hs = torch.cat([h, state], dim=1)
+        # hs = self.pos_encoder(hs)
         hs = self.encoder(hs)['last_hidden_state']
         new_state = hs[:, h.shape[1]:]
         # out = hs[:, : h.shape[1]]

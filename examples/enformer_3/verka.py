@@ -1,11 +1,15 @@
 import json
 import logging
+import random
 import sys
 import os
 import time
 from typing import Dict
-sys.path.append("/home/jovyan/filtered-transformer/")
-from tqdm import tqdm
+
+from examples.enformer_2.modules import Predictor
+from examples.spliceai.modules import BertForTokenClassification
+sys.path.append(os.getcwd())
+
 from data_filters.top_errors import InputTarget, TopErrorsFilter
 from memup.accumulator import Accumulator
 from metrics.pearson import MeanPearsonCorrCoefPerChannel, PearsonCorrLoss
@@ -20,98 +24,125 @@ import transformers
 from transformers import AutoConfig, AutoTokenizer, HfArgumentParser
 from transformers.optimization import AdamW
 import numpy as np
-from examples.enformer_3.data import EnformerDataset
-from examples.enformer_3.modules import BertForEnformer
+from examples.enformer_3.data import EnformerDataset, TestEnformerDataset
+from examples.enformer_3.modules import BertForEnformer, ContextCollector, DataCollectorTrain, DataFilter, MemUpMemoryImpl
 from gena_lm.modeling_bert import BertPreTrainedModel, BertModel
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.tensorboard import SummaryWriter
+
 
 torch.cuda.set_device("cuda:0")
 
-tokenizer = AutoTokenizer.from_pretrained('/home/jovyan/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/')
+tokenizer = AutoTokenizer.from_pretrained('/home/jovyan/nazar/filtered-transformer/data/tokenizers/t2t_1000h_multi_32k/')
+
+def collate_fn(batch_with_chunks):
+    pad_token_ids = {'input_ids': tokenizer.pad_token_id, 'token_type_ids': 0, 'attention_mask': 0, 'bins_mask': 0, 'labels': -1}
+
+    def pad_batch(batch, feature_keys):
+        padded_batch = {}
+        for k in feature_keys:
+            padded_batch[k] = pad_sequence(
+                [torch.from_numpy(el[k]) for el in batch], 
+                batch_first=True, 
+                padding_value=pad_token_ids[k]
+            )
+        return padded_batch
+
+    chunks = []
+    emply = {k: v[:0] for k, v in batch_with_chunks[0]["chunks"][0].items()}
+
+    for pos in range(max([len(el["chunks"]) for el in batch_with_chunks])):
+        batch = []
+        for el in batch_with_chunks:
+            if len(el["chunks"]) > pos:
+                batch.append(el["chunks"][pos])
+            else:
+                batch.append(emply)
+         
+        padded = pad_batch(batch, ['input_ids', 'token_type_ids', 'attention_mask', 'bins_mask'])
+
+        padded["labels_mask"] = pad_sequence(
+            [torch.ones(el["bins_mask"].astype(np.int32).sum()) for el in batch],
+            batch_first=True,
+            padding_value=0
+        ).type(torch.bool)
+
+        chunks.append(padded)
+
+    labels = torch.stack([torch.from_numpy(el["labels"]) for el in batch_with_chunks])
+
+    return chunks, labels
 
 
-pad_token_ids = {'input_ids': tokenizer.pad_token_id, 'token_type_ids': 0, 'attention_mask': 0,
-                    'bins_mask': 0, 'labels': 0}
-pad_to_divisible_by = 2
+data_path = "/home/jovyan/nazar/human_test.h5"
+train_dataset = TestEnformerDataset(tokenizer, data_path)
 
-def collate_fn(batch):
-    feature_keys = ['input_ids', 'token_type_ids', 'attention_mask', 'bins_mask']
-    padded_batch = {k: [] for k in feature_keys}
-    max_seq_len = max([len(el['input_ids']) for el in batch])
-    max_seq_len += (
-        (pad_to_divisible_by - max_seq_len % pad_to_divisible_by)
-        if max_seq_len % pad_to_divisible_by != 0
-        else 0
-    )
-    for k in feature_keys:
-        for i, el in enumerate(batch):
-            dtype = batch[i][k].dtype
-            pad = np.array([pad_token_ids[k]] * max(0, max_seq_len - len(el[k])), dtype=dtype)
-            padded_batch[k] += [np.concatenate([batch[i][k], pad])]
+print(f'len(train_dataset): {len(train_dataset)}')
 
-    max_labels_len = max([len(el['labels']) for el in batch])
-    padded_batch['labels'] = []
-    padded_batch['labels_mask'] = torch.ones((len(batch), max_labels_len), dtype=torch.bool)
-    for i, el in enumerate(batch):
-        el = el['labels']
-        pad = np.ones((max(0, max_labels_len - len(el)), el.shape[-1])) * pad_token_ids['labels']
-        padded_batch['labels'] += [np.concatenate([batch[i]['labels'], pad])]
-        padded_batch['labels_mask'][i, len(el):] = 0
+train_dataloader = DataLoader(train_dataset, shuffle=False, batch_size=32, pin_memory=True, num_workers=4, collate_fn=collate_fn)
 
-    for k in padded_batch:
-        padded_batch[k] = torch.from_numpy(np.stack(padded_batch[k]))
-
-    return padded_batch
-
-
-# get train dataset
-train_dataloader = None
-valid_dataloader = None
-test_dataloader = None
-
-test_data_path = "/home/jovyan/human_test.h5"
-test_dataset = EnformerDataset(tokenizer, test_data_path, max_seq_len=512, bins_per_sample=24)
-test_dataloader = DataLoader(test_dataset, batch_size=40, num_workers=5, collate_fn=collate_fn, shuffle=False)
-
-# define model
-model_cfg = AutoConfig.from_pretrained('/home/jovyan/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json')
+model_cfg = AutoConfig.from_pretrained('/home/jovyan/nazar/filtered-transformer/data/configs/L12-H768-A12-V32k-preln.json')
 model_cfg.num_labels = EnformerDataset.TG_COUNT
-model = BertForEnformer(config=model_cfg)
+model = BertForEnformer(config=model_cfg, tokenizer=tokenizer)
+predictor = Predictor(model_cfg, 1)
 
-checkpoint = torch.load("/home/jovyan/model_best.pth", map_location='cpu')
-missing_k, unexpected_k = model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-if len(missing_k) != 0:
-    print(f'{missing_k} were not loaded from checkpoint! These parameters were randomly initialized.')
-if len(unexpected_k) != 0:
-    print(f'{unexpected_k} were found in checkpoint, but model is not expecting them!')
-
-
-def batch_transform_fn(batch):
-    return {
-        'input_ids': batch['input_ids'],
-        'token_type_ids': batch['token_type_ids'],
-        'attention_mask': batch['attention_mask'],
-        'labels': batch['labels'],
-        'labels_mask': batch['labels_mask'],
-        'bins_mask': batch['bins_mask'],
-    }
+weights = torch.load("/home/jovyan/models/enformer_10.2.pt", map_location="cpu")
+model.load_state_dict(weights["mem"])
+predictor.load_state_dict(weights["pred"])
 
 model = model.cuda()
-model = model.eval()
-
-datasets = {'test': test_dataloader}
-for sn in datasets:
-    dl = datasets[sn]
-    if dl is not None:
-        corr_coef = MeanPearsonCorrCoefPerChannel(n_channels=EnformerDataset.TG_COUNT)
-        with torch.no_grad():
-            for batch in tqdm(dl, desc=sn):
-                batch = batch_transform_fn(batch)
-                batch = {k: batch[k].cuda() for k in batch}
-                output = model(**batch)
-                pred = torch.nn.functional.softplus(output['logits'].detach())
-                labels = batch['labels'][batch['labels_mask']]
-                corr_coef.update(preds=pred.cpu(), target=labels.cpu())
-                print(f'{sn} corr_coef: {corr_coef.compute().mean()}')
+predictor = predictor.cuda()
+model.eval()
+predictor.eval()
 
 
+data_filter = DataFilter(511)
+
+memup_iter = MemoryRollout[Dict[str, torch.Tensor]](
+    steps=2,
+    memory=MemUpMemoryImpl(model),
+    data_filter=data_filter,
+    info_update=[IncrementStep()]
+)
+
+pearson_corr_coef = MeanPearsonCorrCoefPerChannel(5313)
+
+
+with torch.no_grad():
+
+    for it, (chunks, labels) in enumerate(train_dataloader):
+
+        preds = []
+        masks = []
+        print("chunks count", len(chunks))
+        print(chunks[0]['input_ids'].shape)
+
+        state = torch.zeros(labels.shape[0], 100, model_cfg.hidden_size, device=torch.device("cuda:0"))
+
+        for batch in chunks:
+
+            context_collector, last_state, _, _ = memup_iter.forward(batch, state, {}, ContextCollector(), steps=100)
+            context = context_collector.result()
+            last_state = last_state.cuda()
+            context = context.cuda()
+            prediction = predictor(context, last_state, batch["labels_mask"].cuda()).cpu()
+
+            preds.append(prediction)
+            masks.append(batch["labels_mask"])
+            # print(batch["labels_mask"][0])
+
+        preds = torch.cat(preds, 1)
+        masks = torch.cat(masks, 1)
+
+        preds = preds[masks].reshape(labels.shape[0], 896, -1)
+        print(preds.shape)
+
+        pearson_corr_coef.update(preds, labels)
+        p_corr = pearson_corr_coef.compute().mean().item()
+        print("pearson_corr_coef", p_corr)
+
+            
+        
+
+
+    

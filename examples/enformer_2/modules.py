@@ -174,13 +174,11 @@ class BertForEnformer(BertPreTrainedModel):
 
         config2 = deepcopy(config)
         config2.num_attention_heads = 6
-        config2.num_hidden_layers = 4
+        config2.num_hidden_layers = 6
         config2.intermediate_size = config.hidden_size * 2
 
         self.encoder = BertEncoder(config2)
         self.encoder.train()
-
-        # Initialize weights and apply final processing
         self.post_init()
 
     def forward(
@@ -349,18 +347,17 @@ class Predictor(nn.Module):
 
 
 
-    def forward(self, x, state):
+    def forward(self, x, state, mask):
         B, D = state.shape[0], state.shape[2]
         T = x.shape[1]
         # mult = x.shape[2] // D
-        # extended_mask = mask[:, :, None].expand(*mask.shape, mult).reshape(B, T * mult).type(torch.int32)
-        # extended_mask = mask
+        # extended_mask = mask[:, :, None].type(torch.int32)
+        extended_mask = mask.type(torch.int32)
         # state_3 = torch.cat([state] * self.mult, -1)
-        # state_mask = torch.ones(state.shape[:2], dtype=torch.int32, device=state.device)
-        # extended_mask = torch.cat([extended_mask, state_mask], dim=1)
+        state_mask = torch.ones(state.shape[:2], dtype=torch.int32, device=state.device)
+        extended_mask = torch.cat([extended_mask, state_mask], dim=1)
         xs = torch.cat([x, state], dim=1)
         # xs = x
-        # extended_mask = self.get_extended_attention_mask(extended_mask, xs.shape)
-        out = self.encoder.forward(xs)['last_hidden_state'][:, :T][:, 80:-80]
-        assert out.shape[1] == 896
+        extended_mask = self.get_extended_attention_mask(extended_mask, xs.shape)
+        out = self.encoder.forward(xs, attention_mask=extended_mask)['last_hidden_state'][:, :T]
         return self.head(out)
