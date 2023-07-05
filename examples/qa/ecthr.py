@@ -34,9 +34,6 @@ model = RobertaRT(RobertaModel.from_pretrained(
 
 predictor = Predictor(model.bert.config).cuda()
 
-# test 1 72.22
-# test 2 75.56
-# test 3 74.44
 # weights = torch.load("/home/jovyan/models/etc_1_900.pt", map_location="cpu")
 # model.load_state_dict(weights["mem"])
 # predictor.load_state_dict(weights["pred"])
