@@ -112,6 +112,62 @@ def tokenize_examples_for_mc_lm_model(examples, tokenizer, max_seq_length: int,
     return result
 
 
+def tokenize_examples_for_cls_lm_model(examples, tokenizer, max_seq_length: int,
+                                       padding_strategy: PaddingStrategy,
+                                       truncation_strategy: TruncationStrategy,
+                                       mode: str = "random", baseline_type: str = "baseline_cls", key2=None):
+    """
+    Takes a dictionary of examples, with keys:
+        context: str (before [SEP])
+        query: str (after [SEP], can be empty)
+        answer: str
+        label: int
+    """
+    # This assumes option_keys sorted order corresponds labels order
+    # which is fine for num_labels < 10
+    result = {
+        "label": examples["label"],
+    }
+    if key2 is not None:
+        input_part2 = [
+            query for query in examples[key2]
+        ]
+        tokenized_option = tokenizer(
+            examples["context"],
+            input_part2,
+            padding=False if baseline_type != "baseline_cls" else padding_strategy,
+            max_length=None if baseline_type != "baseline_cls" else max_seq_length,
+            truncation=False if baseline_type != "baseline_cls" else truncation_strategy,
+        )
+
+        option_token_end_idx = [np.array(seq).sum() for seq in tokenized_option["attention_mask"]]
+        input_part_token_start_idx = option_token_end_idx - np.array([
+            len(tokenizer.tokenize(x)) + 2
+            for x in input_part2
+        ])
+        for k in range(len(input_part_token_start_idx)):
+            assert tokenized_option['input_ids'][k][input_part_token_start_idx[k]] == tokenizer.sep_token_id
+
+        tokenized_option["input_part_token_start_idx"] = input_part_token_start_idx
+
+    else:
+        tokenized_option = tokenizer(
+            examples["context"],
+            padding=False if baseline_type != "baseline_cls" else padding_strategy,
+            max_length=None if baseline_type != "baseline_cls" else max_seq_length,
+            truncation=False if baseline_type != "baseline_cls" else truncation_strategy,
+        )
+    for k, v in tokenized_option.items():
+        if k not in result:
+            result[k] = v#[[v_elem] for v_elem in v]
+        else:
+            for i, v_elem in enumerate(v):
+                result[k][i].append(v_elem)
+    return result
+
+
+
+
 def get_tokenized_dataset(task: tasks.Task, dataset_dict,
                           tokenizer,
                           max_seq_length: int,
@@ -133,6 +189,12 @@ def get_tokenized_dataset(task: tasks.Task, dataset_dict,
             tokenize_examples = lambda examples: tokenize_examples_for_mc_lm_model(examples, tokenizer, max_seq_length,
                                                                                    padding_strategy,
                                                                                    truncation_strategy)
+            
+        elif model_mode in ["cls"]:
+            tokenize_examples = lambda examples: tokenize_examples_for_cls_lm_model(examples, tokenizer, max_seq_length,
+                                                                                    padding_strategy,
+                                                                                    truncation_strategy,
+                                                                                    model_mode)
         else:
             tokenize_examples = lambda examples: tokenize_examples_for_enc_dec_model(examples, tokenizer,
                                                                                      max_seq_length,

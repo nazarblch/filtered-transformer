@@ -5,6 +5,10 @@ import numpy as np
 import datasets
 import transformers
 from io_utils import read_json, read_jsonl
+import datasets
+import transformers
+import zipfile
+import wget
 
 
 class Task:
@@ -236,3 +240,97 @@ def get_task(task_args: TaskArguments):
         "race": RaceTask,
     }
     return task_dict[task_args.task_name]()
+
+
+class HFClassificationTask(Task):
+    def __init__(self, task_args):
+        """Only for tasks with two inputs!
+        (and mostly for debug purposes)
+        """
+        self.task_name, self.subset, self.key1,\
+        self.key2, self.label, self._num_labels = task_args
+        self._num_choices = self._num_labels
+    
+    def get_datasets(self) -> dict:
+        if self.subset is not None:
+            return datasets.load_dataset(self.task_name, self.subset)
+        return datasets.load_dataset(self.task_name)
+    
+    def standardize_examples(self, examples):
+        result = {
+            "context": examples[self.key1],
+            "label": list(map(int, examples[self.label])),
+        }
+        if self.key2 is not None:
+            result[self.key2] = examples[self.key2]
+        return result
+    
+    @property
+    def drop_columns(self) -> list:
+        return []
+    
+    @property
+    def num_choices(self) -> int:
+        return self._num_choices
+
+    @property
+    def num_labels(self) -> int:
+        return self._num_labels
+
+
+class ECTHRBinaryClassificationTask(HFClassificationTask):
+    def __init__(self, task_args, base_path):
+        super().__init__(task_args)
+        self.base_path = base_path
+
+    def get_datasets(self) -> dict:
+        # load data if needed
+        data_link = "https://archive.org/download/ECtHR-NAACL2021/dataset.zip"
+        files = ["train.jsonl", "dev.jsonl", "test.jsonl"]
+        os.makedirs(self.base_path, exist_ok=True)
+        file_pathes = [os.path.join(self.base_path, fname) for fname in files]
+        if not(all([os.path.isfile(file) for file in file_pathes])):
+            fname = wget.download(data_link, out=self.base_path)
+            with zipfile.ZipFile(fname, "r") as zip_ref:
+                zip_ref.extractall(self.base_path)
+        phases = ["train", "validation", "test"]
+        dataset_dict = {}
+        #from transformers import AutoTokenizer
+        #tokenizer = AutoTokenizer.from_pretrained(
+        #    "roberta-base",
+        #)
+        for phase, file in zip(phases, files):
+            phase_path = os.path.join(self.base_path, file)
+            data = read_jsonl(phase_path)
+            data_dict = {"context": list(map(" ".join, [el[self.key1] for el in data])),
+                         "label": list(map(int, [len(el[self.label]) > 0 for el in data]))}
+            dataset_dict[phase] = datasets.Dataset.from_dict(data_dict)
+            if self.subset == "bal":
+                # undersample all
+                dataset_dict[phase] = self.resample_dataset(dataset_dict, phase)
+            elif self.subset == "bal_train":
+                # undersample only train
+                if phase == "train":
+                    dataset_dict[phase] = self.resample_dataset(dataset_dict, phase)
+            print(f"Stats for {phase}: {np.unique(dataset_dict[phase]['label'], return_counts=True)}")
+            #lens = [len(tokenizer(el)["input_ids"]) for el in dataset_dict[phase]['context']]
+            #print(f"Samples stats for {phase}: min words: {np.min(lens)}, max words {np.max(lens)}, mean words {np.mean(lens)}, 95 percentile: {np.percentile(lens, 95)} ")
+        return dataset_dict
+
+    def resample_dataset(self, dataset, split="train"):
+        # balance classes
+        # fix seeds for reproducibility
+        np.random.seed(42)
+        negatives = dataset[split].filter(lambda el: el["label"] == 0)
+        positives = dataset[split].filter(lambda el: el["label"] == 1)
+        pos_indices = np.arange(len(positives))
+        indices = np.random.choice(pos_indices,
+                                   len(negatives),
+                                   replace=False)
+        return datasets.concatenate_datasets([negatives, positives.select(indices)])
+        
+
+    def standardize_examples(self, examples):
+        return examples
+
+
