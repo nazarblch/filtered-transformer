@@ -86,7 +86,7 @@ model_cfg.num_labels = EnformerDataset.TG_COUNT
 model = BertForEnformer(config=model_cfg, tokenizer=tokenizer)
 predictor = Predictor(model_cfg, 1)
 
-weights = torch.load("/home/jovyan/models/enformer_10.2.pt", map_location="cpu")
+weights = torch.load("/home/jovyan/models/enformer_10.5.pt", map_location="cpu")
 model.load_state_dict(weights["mem"])
 predictor.load_state_dict(weights["pred"])
 

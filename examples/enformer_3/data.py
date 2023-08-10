@@ -71,7 +71,7 @@ class EnformerDataset(Dataset):
         active_bins = encoded_bins[pos_1:pos_2]
         
         sep = self.tokenizer.sep_token_id
-        CLEN = 1022
+        CLEN = 1022 * 2
         sample_token_ids = reduce(lambda b1, b2: b1 + b2, [b + [sep] for b in active_bins])
         left_context = reduce(lambda b1, b2: b1 + b2, [b for b in encoded_bins[:pos_1] + [[]]])[-CLEN:]
         right_context = reduce(lambda b1, b2: b1 + b2, [b for b in encoded_bins[pos_2:] + [[]]])[:CLEN]
@@ -143,7 +143,7 @@ class TestEnformerDataset(Dataset):
         encoded_bins = self.tokenizer.batch_encode_plus(bins_seq, add_special_tokens=False, return_attention_mask=False,
                                                         return_token_type_ids=False)['input_ids']
         
-        CLEN = 1022
+        CLEN = 1022 * 2
         
         left_seq = [seq[:EnformerDataset.PAD]]
         left_inputs = self.tokenizer.batch_encode_plus(left_seq, add_special_tokens=False, return_attention_mask=False, return_token_type_ids=False)['input_ids'][0]

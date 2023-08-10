@@ -67,7 +67,7 @@ def collate_fn(batch):
     return padded
 
 
-data_path = "/home/jovyan/nazar/human_test.h5"
+data_path = "/home/jovyan/nazar/human_train.h5"
 train_dataset = EnformerDataset(tokenizer, data_path)
 
 print(f'len(train_dataset): {len(train_dataset)}')
@@ -87,7 +87,7 @@ predictor = Predictor(model_cfg, 1)
 # weights = bert.bert.state_dict()
 # model.bert.load_state_dict(weights)
 
-weights = torch.load("/home/jovyan/models/enformer_10.1.pt", map_location="cpu")
+weights = torch.load("/home/jovyan/models/enformer_10.2.pt", map_location="cpu")
 model.load_state_dict(weights["mem"])
 predictor.load_state_dict(weights["pred"])
 
@@ -134,7 +134,7 @@ def pred_loss(state, out, target, mask):
         return sum_loss, losses
 
 
-writer = SummaryWriter("/home/jovyan/pomoika/enformer10.2")
+writer = SummaryWriter("/home/jovyan/pomoika/enformer10.5")
 global_step = 0
 
 
@@ -173,6 +173,7 @@ for _ in range(10):
 
         model.train()
         predictor.train()
+        state = torch.zeros(batch["labels"].shape[0], 100, model_cfg.hidden_size, device=torch.device("cuda:0"))
 
         while not done:
             global_step += 1
@@ -197,13 +198,13 @@ for _ in range(10):
             for name, val in losses.items():
                 writer.add_scalar(f"train/{name}", val, global_step)
 
-            # if global_step % 1000 == 0:
-            #         torch.save({
-            #             "mem": model.state_dict(),
-            #             "pred": predictor.state_dict(),
-            #             # "mem_acc": mem_acc.get_module().state_dict(),
-            #             # "pred_acc": pred_acc.get_module().state_dict()
-            #         }, "/home/jovyan/enformer_10.0.pt")
+            if global_step % 1000 == 0:
+                    torch.save({
+                        "mem": model.state_dict(),
+                        "pred": predictor.state_dict(),
+                        # "mem_acc": mem_acc.get_module().state_dict(),
+                        # "pred_acc": pred_acc.get_module().state_dict()
+                    }, "/home/jovyan/enformer_10.5.pt")
 
 
             
