@@ -21,6 +21,7 @@ class DataFilter(nn.Module):
         self.register_buffer('cls_token', torch.tensor([tokenizer.cls_token_id]))
         self.register_buffer('sep_token', torch.tensor([tokenizer.sep_token_id]))
         self.segment_size = size
+        self.always_add_promt = True
 
     def pad_add_special_tokens_for_qa(self, tensor, query_option):
         input_elements = [self.cls_token, tensor, query_option]
@@ -119,7 +120,7 @@ class DataFilter(nn.Module):
             info["shift_batch"] = torch.zeros(batch['input_ids'].shape[0] * 4, dtype=torch.int32)
         
         # 
-        if random.randint(0, 10) > 5 or info["shift_batch"].sum() < 1:
+        if random.randint(0, 10) > 5 or info["shift_batch"].sum() < 1 or self.always_add_promt:
             input_ids, new_shift = self.get_cut_input(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
         else:
             input_ids, new_shift = self.get_cut_input_without_option(batch['input_ids'], batch['input_part_token_start_idx'], info["shift_batch"])
