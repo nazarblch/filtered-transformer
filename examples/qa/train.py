@@ -43,7 +43,7 @@ def set_seed(seed: int = 42) -> None:
     print(f"Random seed set as {seed}")
 
 
-set_seed(5)
+set_seed(8)
 
 
 def adjust_tokenizer(tokenizer):
@@ -70,9 +70,9 @@ model = RobertaRT(RobertaModel.from_pretrained(
 
 predictor = Predictor(model.bert.config).cuda()
 
-# weights = torch.load("/home/jovyan/models/qa_5.240.pt", map_location="cpu")
-# model.load_state_dict(weights["mem"])
-# predictor.load_state_dict(weights["pred"])
+weights = torch.load("/home/jovyan/models/qa_3.180.pt", map_location="cpu")
+model.load_state_dict(weights["mem"])
+predictor.load_state_dict(weights["pred"])
 
 
 task = tasks.get_task(task_args=tasks.TaskArguments(task_name="custom", task_base_path="/home/jovyan/nazar/quality_mc/"))
@@ -82,7 +82,7 @@ tokenized_dataset_dict = get_tokenized_dataset(
     task=task,
     dataset_dict=dataset_dict,
     tokenizer=tokenizer,
-    max_seq_length=4096,
+    max_seq_length=512 * 6,
     padding_strategy=PaddingStrategy(PaddingStrategy.MAX_LENGTH),
     truncation_strategy=TruncationStrategy(TruncationStrategy.ONLY_FIRST),
     model_mode="mc",
@@ -91,12 +91,12 @@ tokenized_dataset_dict = get_tokenized_dataset(
 train_data = tokenized_dataset_dict.get("train")
 test_data = tokenized_dataset_dict.get("validation")
 
-train_data, val_data = torch.utils.data.random_split(train_data, 
-                                                     [int(len(train_data) * 0.8), len(train_data) - int(len(train_data) * 0.8)])
+# train_data, val_data = torch.utils.data.random_split(train_data, 
+#                                                      [int(len(train_data) * 0.8), len(train_data) - int(len(train_data) * 0.8)])
 
 print("TRAIN size", len(train_data))
 print("TEST size", len(test_data))
-print("VAL size", len(val_data))
+# print("VAL size", len(val_data))
 
 def collate_fn(batch):
 
@@ -112,9 +112,10 @@ def collate_fn(batch):
 
 train_dataloader = DataLoader(train_data, shuffle=True, batch_size=32, num_workers=8, collate_fn=collate_fn)
 test_dataloader = DataLoader(test_data, shuffle=False, batch_size=128, num_workers=8, collate_fn=collate_fn)
-val_dataloader = DataLoader(val_data, shuffle=False, batch_size=128, num_workers=8, collate_fn=collate_fn)
+# val_dataloader = DataLoader(val_data, shuffle=False, batch_size=128, num_workers=8, collate_fn=collate_fn)
 
 data_filter = DataFilter(tokenizer, 250)
+data_filter.always_add_promt = False
 
 memup_iter = MemoryRollout[Dict[str, Tensor]](
     steps=2,
@@ -140,7 +141,7 @@ class DataCollectorEval(DataCollectorReplace[Dict[str, Tensor], Tensor]):
         return state
 
 
-writer = SummaryWriter("/home/jovyan/pomoika/qa/2.7")
+writer = SummaryWriter("/home/jovyan/pomoika/qa/4.5")
 global_step = 0
 batch_count = 0
 
@@ -163,10 +164,12 @@ for it in range(100):
 
         print(it, batch_count, global_step)
 
-        if global_step > 3000:
-            data_filter.always_add_promt = False
+        #if global_step % 2 == 0:
+        data_filter.always_add_promt = False
+        #else:
+        #    data_filter.always_add_promt = True
 
-        grad_acc_times = 5
+        grad_acc_times = 7
 
         while not done:
             global_step += 1
@@ -186,7 +189,7 @@ for it in range(100):
 
             (loss / grad_acc_times).backward()
 
-            if global_step % grad_acc_times == 0:
+            if global_step % grad_acc_times == 0 or done:
                 opt.step()
                 opt.zero_grad()
 
@@ -194,10 +197,10 @@ for it in range(100):
             # torch.save({
             #     "mem": model.state_dict(),
             #     "pred": predictor.state_dict()
-            # }, f"/home/jovyan/models/qa_2.0.pt")
+            # }, f"/home/jovyan/models/qa_3.{batch_count}.pt")
 
             print("TEST length ", len(test_data))
-            data_filter.always_add_promt = True
+            #data_filter.always_add_promt = True
 
             with torch.no_grad():
 
@@ -229,37 +232,37 @@ for it in range(100):
                 print("final test acc", acc)
                 writer.add_scalar("test acc", acc, global_step)
             
-            print("EVAL length ", len(val_data))
+            # print("EVAL length ", len(val_data))
 
-            with torch.no_grad():
+            # with torch.no_grad():
 
-                all_pred = []
-                all_labels = []
+            #     all_pred = []
+            #     all_labels = []
 
-                for batch in val_dataloader:
-                    labels = batch["label"].cuda()
+            #     for batch in val_dataloader:
+            #         labels = batch["label"].cuda()
 
-                    state = torch.zeros(labels.shape[0] * 4, 30, 768, device=torch.device("cuda"))
-                    done = False
-                    info = {}
+            #         state = torch.zeros(labels.shape[0] * 4, 30, 768, device=torch.device("cuda"))
+            #         done = False
+            #         info = {}
 
-                    model.eval()
-                    predictor.eval()
+            #         model.eval()
+            #         predictor.eval()
 
-                    data_collector, last_state, _, _ = memup_iter.forward(batch, state, info, DataCollectorEval(), steps=1000)
-                    pred = predictor(last_state)
-                    loss = nn.CrossEntropyLoss()(pred, labels)
-                    acc = AccuracyMetric()(pred, labels)
+            #         data_collector, last_state, _, _ = memup_iter.forward(batch, state, info, DataCollectorEval(), steps=1000)
+            #         pred = predictor(last_state)
+            #         loss = nn.CrossEntropyLoss()(pred, labels)
+            #         acc = AccuracyMetric()(pred, labels)
 
-                    print(loss.item(), "acc=", acc)
-                    writer.add_scalar("val loss", loss.item(), global_step)
+            #         print(loss.item(), "acc=", acc)
+            #         writer.add_scalar("val loss", loss.item(), global_step)
 
-                    all_pred.append(pred.detach().cpu())
-                    all_labels.append(labels.cpu())
+            #         all_pred.append(pred.detach().cpu())
+            #         all_labels.append(labels.cpu())
                 
-                acc = AccuracyMetric()(torch.cat(all_pred), torch.cat(all_labels))
-                print("final val acc", acc)
-                writer.add_scalar("val acc", acc, global_step)
+            #     acc = AccuracyMetric()(torch.cat(all_pred), torch.cat(all_labels))
+            #     print("final val acc", acc)
+            #     writer.add_scalar("val acc", acc, global_step)
 
 
 
